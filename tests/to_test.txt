@@ -1,0 +1,68 @@
+Base Tokenizer
+----------
+
+* Create new tokenizers while changing kwargs and functions
+    - Make an entirely fake tokenizer for fake language
+    - Insert new values with `tokens`
+        a. some can be completely new
+        b. some will override previous ones with new token regexs
+        c. some will override previous ones with None to not use those tokens at all
+    - Insert new token handling functions with `token_handlers`
+    - Turn `insert_special_tokens` on and off
+    - Turn `case_sensitive` on and off
+* override special functions, token handler functions, default values with class
+* passing different call args/kwargs
+    - match_instruction_address
+    - newline_tup (changed and None)
+    - special kwargs passed to overridden functions
+    - passing values as single/multiple strings
+* Default tokens
+    - immediate values
+    - string literals (and fails)
+    - disassembler infos (and fails)
+        * just parsing for now on tokenizers
+    - split immediate (and fails)
+        * and merging behavior
+    - spacing/newlines
+    - symbols (+*[]:)
+    - instruction address
+        * with and without colon ':', with and without spacing around colon, multiple colons
+        * Plain colon at beginning, colon after other tokens
+        * No negatives as instruction address
+* Empty string
+* __dunder__ functions can be called (including __call__)
+    - Args passed to __call__ get transferred to .tokenize
+    - __eq__ is different with different tokens/classes
+    - __hash__'s are different
+* Pickling/unpickling
+    - Objects are still equal
+    - parameter saver works even with lambdas in __init__
+
+
+BaseNormalizer
+--------------
+
+* Initialized, and with different kwargs
+    - tokenizer
+    - overridden token_handlers
+    - token_sep
+    - tokenization_level
+    - Different class args
+        * DEFAULT_TOKENIZATION_LEVEL
+* All tokens are handled and normalized
+    - Replace the handlers for all tokens to return "<token_type>"
+    - All of the matched tokens
+    - mismatched/unknown tokens
+* Register different opcode handlers
+* Passing kwargs through to tokenizer
+* Pickling/unpickling
+    - Objects are still equal
+    - parameter saver works even with lambdas in __init__
+* Split immediates
+* Empty string
+* Immediates are all converted to decimal
+* __dunder__ functions can be called (including __call__)
+    - Args passed to __call__ get transferred to .tokenize
+* Disassembler info
+* Equality to other normalizers with different __init__ kwargs
+* Annonymize tokens
