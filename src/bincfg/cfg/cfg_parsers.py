@@ -8,7 +8,7 @@ import sys
 import bincfg
 import copy
 from .cfg_function import CFGFunction
-from .cfg_basic_block import CFGBasicBlock, RETURN_INSTRUCTION_RE
+from .cfg_basic_block import CFGBasicBlock
 from .cfg_edge import CFGEdge, EdgeType
 from ..utils import get_address, get_module
 
@@ -289,8 +289,6 @@ def _parse_txt_block(func, block_lines, curr_blocks):
             if not isinstance(edge_addr, int):
                 # Check for indeterminate/nonexistant edges. We ignore these, but check to see if this is a function return
                 if edge_addr[0] != '0':
-                    if line[0] == 'f' and line[9] == 'r':  # Check for 'function return edge to indeterminate'
-                        assert RETURN_INSTRUCTION_RE.fullmatch(block.asm_lines[-1][1]), block.asm_lines
                     continue
 
                 # Convert edge_addr to int
@@ -302,8 +300,6 @@ def _parse_txt_block(func, block_lines, curr_blocks):
                     if line[19] == 't':
                         block.edges_out.add(CFGEdge(block, _create_basic_block(curr_blocks, edge_addr), 
                             edge_type=EdgeType.FUNCTION_CALL))
-                else:
-                    assert RETURN_INSTRUCTION_RE.fullmatch(block.asm_lines[-1][1])
             
             # Check for "call return edge to" or "normal edge to"
             elif (line[0] == 'c' and line[17] == 't') or (line[0] == 'n' and line[12] == 't'):

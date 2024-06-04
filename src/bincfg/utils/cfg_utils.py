@@ -4,10 +4,11 @@ Utilities for CFG/MemCFG objects and their datasets
 
 import numpy as np
 import bincfg
+from .type_utils import AddressLike
 from .misc_utils import get_smallest_np_dtype
 
 
-def get_address(obj):
+def get_address(obj: 'AddressLike') -> 'int':
     """Gets the integer address from the given object
 
     Args:
@@ -46,9 +47,6 @@ def check_for_normalizer(dataset, cfg_data):
     Assumes this dataset does not yet have a normalizer. Searches the incoming `cfg_data` for a cfg/dataset that
     has a normalizer, and sets it to be this dataset's normalizer. If this method finds no normalizer, or multiple
     unique normalizers, then an error will be raised.
-
-    :param dataset: 
-    :param cfg_data: 
 
     Args:
         dataset (Union[CFGDataset, MemCFGDataset]): a ``CFGDataset`` or ``MemCFGDataset`` without a normalizer

@@ -19,34 +19,6 @@ from copy import deepcopy
 # The actual progressbar object, once it has been determined
 _IMPORT_PROGRESSBAR = None
 
-# A logger to log with if needed
-LOGGER = None
-
-
-def log(severity='info', message=''):
-    """Attempts to log a message if LOGGER has already been set"""
-    severity = severity.lower()
-    if LOGGER is None:
-        return
-    elif severity in ['warn', 'warning', 'warns', 'warnings']:
-        LOGGER.warn(message)
-    elif severity in ['debug']:
-        LOGGER.debug(message)
-    elif severity in ['info']:
-        LOGGER.info(message)
-    elif severity in ['critical', 'crit']:
-        LOGGER.critical(message)
-    elif severity in ['error', 'err']:
-        LOGGER.error(message)
-    else:
-        raise ValueError("Unknown severity: %s" % repr(severity))
-
-
-def set_logger(logger):
-    """Sets the logger for this module"""
-    global LOGGER
-    LOGGER = logger
-
 
 def get_smallest_np_dtype(val, signed=False):
     """Returns the smallest numpy integer dtype needed to store the given max value.

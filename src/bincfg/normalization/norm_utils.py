@@ -357,9 +357,6 @@ def get_normalizer(normalizer):
     
     elif hasattr(normalizer, 'normalize') and callable(normalizer.normalize):
         return normalizer
-
-    elif type(normalizer).__name__ == '_Pickled_Normalizer':
-        return normalizer.unpickle()
     
     elif isinstance(normalizer, type):
         try:

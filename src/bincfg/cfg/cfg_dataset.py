@@ -3,7 +3,7 @@ import pickle
 from collections import Counter
 from .cfg import CFG
 from ..normalization import normalize_cfg_data, get_normalizer
-from ..utils import progressbar, isinstance_with_iterables, hash_obj, eq_obj, get_thread_pool
+from ..utils import progressbar, isinstance_with_iterables, hash_obj, eq_obj
 
 
 class CFGDataset:

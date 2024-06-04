@@ -75,6 +75,14 @@ class JavaBaseNormalizer(BaseNormalizer):
                          tokenization_level=tokenization_level, anonymize_tokens=anonymize_tokens)
         self.register_opcode_handler(JAVA_FUNCTION_CALL_RE, self.opcode_function_call)
         self.register_opcode_handler(JAVA_JUMP_RE, self.opcode_jump)
+    
+    def opcode_function_call(self, state):
+        """Handles function call opcodes, defaults to doing nothing"""
+        return None
+    
+    def opcode_jump(self, state):
+        """Handles jump opcodes, defaults to doing nothing"""
+        return None
 
 
 class JavaReplaceImmediateNormalizer(JavaBaseNormalizer):

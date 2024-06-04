@@ -1,6 +1,6 @@
 import re
 from .base_normalizer import BaseNormalizer
-from .base_tokenizer import BaseTokenizer, TokenizationLevel, Tokens, Architectures, TokenMismatchError, UnknownTokenError
+from .base_tokenizer import BaseTokenizer, TokenizationLevel, Tokens, Architectures, TokenMismatchError, UnknownTokenError, get_architecture
 from .normalize import normalize_cfg_data, get_normalizer
 from .x86 import *
 from .java import *

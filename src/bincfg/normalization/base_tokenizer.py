@@ -4,6 +4,7 @@ import re
 from ..utils import ParameterSaver, eq_obj, hash_obj
 from .norm_utils import *
 from enum import Enum
+from ..utils.type_utils import *
 
 
 # Token type names
@@ -34,16 +35,35 @@ class Tokens:
     MISMATCH = 'mismatch'
 
 
-# Enum for different levels of tokenization
 class TokenizationLevel(Enum):
+    """Different levels to perform tokenization"""
     OPCODE = ['op', 'opcode', 'operand', 'opcodes', 'operands']
     INSTRUCTION = ['inst', 'instruction', 'line', 'instructions', 'lines']
     AUTO = ['auto', 'automatic', 'default']
 
 
 class Architectures(Enum):
-    X86 = 'x86'
-    JAVA = 'java'
+    """Known (but not necessarily supported) architectures"""
+    X86 = ['x86', 'i686', 'x86_64']
+    JAVA = ['java', 'java_bytecode']
+
+
+def get_architecture(arch: 'Union[str, Architectures]') -> 'Architectures':
+    """Returns the architecture
+    
+    Args:
+        arch (Union[str, Architectures])
+    """
+    if isinstance(arch, Architectures):
+        return arch
+    elif isinstance(arch, str):
+        arch = arch.lower().replace('-', '_')
+        for a in Architectures:
+            if any(arch == v for v in a.value):
+                return a
+        raise ValueError("Unknown architecture string: %s" % repr(arch))
+    else:
+        raise TypeError("Cannot get architecture from object of type: %s" % repr(type(arch).__name__))
 
 
 class TokenMismatchError(Exception):
@@ -254,8 +274,8 @@ class BaseTokenizer(metaclass=ParameterSaver):
         by default, some special tokens will be inserted at the front of `tokens` (see the 'special tokens' listed above).
         If you wish to stop this from happening, you can set `insert_special_tokens` to False
     case_sensitive: `bool`
-        If True, then it is assumed that all regular expressions will exactly match case. If False, then it is assumed
-        that all regular expressions only handle lowercase strings, and all incoming instructions will be converted to lowercase
+        If True, then regular expressions will be matched exactly as they appear. If False, then the re.IGNORECASE flag
+        will be passed when compiling the regular expressions
     """
 
     DEFAULT_NEWLINE_TUPLE = (Tokens.NEWLINE, '\n')
@@ -281,7 +301,8 @@ class BaseTokenizer(metaclass=ParameterSaver):
     
     def _init_tokenizer(self):
         """Initializes the tokenizer from self.tokens"""
-        self.tokenizer = re.compile('|'.join([("(?P<%s>%s)" % pair) for pair in self.tokens]), flags=re.M)
+        flags = (re.M|re.IGNORECASE) if not self.case_sensitive else re.M
+        self.tokenizer = re.compile('|'.join([("(?P<%s>%s)" % pair) for pair in self.tokens]), flags=flags)
     
     def tokenize(self, *strings, newline_tup=_USE_DEFAULT_NT, match_instruction_address=True, **kwargs):
         """Tokenizes the input
@@ -355,10 +376,6 @@ class BaseTokenizer(metaclass=ParameterSaver):
                        'newline_tup': newline_tup, 'match_instruction_address': match_instruction_address, 'tokenizer': self}
         
         for string in strings:
-            # If we are not case_sensitive, convert to lowercase
-            if not self.case_sensitive:
-                string = string.lower()
-
             token_state.update({'previous_newline': True, 'split_imm': False, 'line': [], 'string': string, 'matched_ia_colon': False})
 
             for mo in self.tokenizer.finditer(string):

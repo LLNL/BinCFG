@@ -113,9 +113,7 @@ def normalize_cfg_data(cfg_data, normalizer, inplace=False, using_tokens=None, f
     # Single CFG's and MemCFG's will be normalized here
     if isinstance(cfg_data, bincfg.CFG):
         for block in ret.blocks:
-            # Check for non-normalized assembly lines at each block, or if they have been normalized already and are lists
-            pre_normed = len(block.asm_lines) > 0 and not isinstance(block.asm_lines[0][1], str)
-            block.asm_lines = [(a, normalizer.normalize(*(l if pre_normed else [l]), cfg=ret, block=block)) for a, l in block.asm_lines]
+            block.asm_lines = normalizer.normalize(*block.asm_lines, cfg=ret, block=block)
 
         # Convert to MemCFG if needed
         if convert_to_mem and isinstance(cfg_data, bincfg.CFG):

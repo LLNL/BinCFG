@@ -129,8 +129,8 @@ def test_case_insensitive(fake_tokenizer, pickled):
     fake_tokenizer = _pickle(fake_tokenizer, pickled)
 
     assert fake_tokenizer.tokenize("Add 1234 FaKe_Apples") == [
-        (Tokens.OPCODE, 'add'), (Tokens.SPACING, ' '), (Tokens.IMMEDIATE, '1234'), (Tokens.SPACING, ' '), 
-        (FAKE_TOKEN_TYPE, pretend_call_token_fake('fake_apples')), (Tokens.NEWLINE, '\n')
+        (Tokens.OPCODE, 'Add'), (Tokens.SPACING, ' '), (Tokens.IMMEDIATE, '1234'), (Tokens.SPACING, ' '), 
+        (FAKE_TOKEN_TYPE, pretend_call_token_fake('FaKe_Apples')), (Tokens.NEWLINE, '\n')
     ]
 
 

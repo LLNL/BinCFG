@@ -6,7 +6,7 @@ import re
 # The delimiter lookahead. Allows for lookahead to make sure there is some delimiter, and we don't greedily grab 
 #   registers/values/etc in case their names interfere with anything else.
 # Can be a spacing, newline, or end of string
-X86_RE_DELIMITER = r'{spacing}|{newline}|[\[\]+*<>]|$'.format(spacing=RE_SPACING, newline=RE_NEWLINE)
+X86_RE_DELIMITER = r'{spacing}|{newline}|[\[\]+*<>:]|$'.format(spacing=RE_SPACING, newline=RE_NEWLINE)
 
 # Dictionary mapping all x86_64 registers to their sizes in bytes
 X86_REGISTER_SIZES = {
@@ -55,7 +55,7 @@ X86_MEMORY_SIZES = {
 
 # Regex matches to registers. This is ~15% faster than brute-force matching all keys in REGISTER_SIZES
 # Registers can be followed by a '*', ']', or delimiter
-X86_RE_REG_RE_MATCH = r'[xyz]?mm[0-9]+|st\(?[0-9]*\)?|(?:[sb]p|[ds]i)l|(?:[sb]p|[ds]i)l|[re]?(?:flags|ip|[bs]p|[sd]i|[abcd]x)|[cd]r[0-9]+|r[0-9]+[dwb]?|[abcd][lh]|[cst]w|fp_(?:[id]p|[cd]s|opc)|[cdefgs]s|(?:[gil]d)?tr|msw|mxcsr'
+X86_RE_REG_RE_MATCH = r'[xyz]?mm[0-9]+|st\(?[0-9]*\)?|(?:[sb]p|[ds]i)l|[re]?(?:flags|ip|[bs]p|[sd]i|[abcd]x)|[cd]r[0-9]+|r[0-9]+[dwb]?|[abcd][lh]|[cst]w|fp_(?:[id]p|[cd]s|opc)|[cdefgs]s|(?:[gil]d)?tr|msw|mxcsr'
 X86_RE_ALL_REGISTERS = r'(?:{all_reg})(?={delim})'.format(all_reg='|'.join([X86_RE_REG_RE_MATCH]), delim=X86_RE_DELIMITER)
 
 # x86_64 instruction prefixes, stolen from: http://web.mit.edu/rhel-doc/3/rhel-as-en-3/i386-prefixes.html.

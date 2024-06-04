@@ -1,153 +1,82 @@
-import pickle
-import sys
 import numpy as np
-import math
 import copy
 import bincfg
+import pickle
+import re
 from collections import Counter, namedtuple
 from .cfg_parsers import parse_cfg_data
 from .cfg_function import CFGFunction
 from .cfg_edge import CFGEdge, EdgeType
 from .cfg_basic_block import CFGBasicBlock
-from ..utils import get_address, eq_obj, hash_obj, AtomicTokenDict, get_module
-from ..normalization import normalize_cfg_data, TokenizationLevel, Architectures
-from ..labeling.parse_cfg_labels import parse_node_labels
-from ..labeling.node_labels import NODE_LABELS_INT_TO_STR, NODE_LABELS_STR_TO_INT
+from ..utils import get_address, eq_obj, hash_obj, get_module
+from ..utils.type_utils import *
+from ..normalization import normalize_cfg_data, Architectures, get_architecture
 
-
-# Info for the get_compressed_stats() method of cfg's
-GRAPH_LEVEL_STATS_FUNCS = [
-    lambda cfg: cfg.num_blocks,
-    lambda cfg: cfg.num_functions,
-    lambda cfg: cfg.num_asm_lines,
-]
-GLS_DTYPE = np.uint32
-NODE_SIZE_HIST_BINS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 50, 60, 80, 100, 150, 200]
-FUNCTION_DEGREE_HIST_BINS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 50, 60, 80, 100, 150, 200]
-FUNCTION_SIZE_HIST_BINS = [0, 1, 2, 3, 4, 6, 8, 10, 15, 20, 25, 30, 40, 60, 80, 100, 150, 200, 300, 400, 500]
 
 # Extra bytes to pad the insertion of libraries into the CFG so we don't mess up other assembly instructions
-_INSERTION_PADDING_BYTES = 16
+_INSERTION_PADDING_BYTES: 'int' = 16
 
 
 class CFG:
     """A Control Flow Graph (CFG) representation of a binary
 
-    Can currently load in from:
-
-        * Rose binary analysis tool (both text and graphviz dotfile outputs)
-    
-    NOTE: 'indeterminate' blocks/calls/etc. are completely ignored
-    
     
     Parameters
     ----------
-    data: `Optional[Union[str, TextIO, Sequence[str], pd.DataFrame]]`
+    data: `Optional[Union[str, TextIO, Sequence[str]]]`
         the data to use to make this CFG. Data type will be inferred based on the data passed:
 
-            * string: either string with newline characters that will be split on all newlines and treated as either a
-              text or graphviz rose input, or a string with no newline characters that will be treated as a filename.
-              Filenames will be opened as ghidra parquet files if they end with either '.pq' or '.parquet', and
-              text/graphviz rose input otherwise
-            * Sequence of string: will be treated as already-read-in text/graphviz rose input
-            * open file object: will be read in using `.readlines`, then treated as text/graphviz rose input
-            * pandas dataframe: will be parsed as ghidra parquet file
-            * anything else: an error will be raised
+            * string: either string with newline characters that will be split on all newlines and as a known disassembler
+              format, or a string with no newline characters that will be treated as a filename.
+            * Sequence of string: will be treated as already-read-in disassembler file split on newlines
+            * open file object: will be read in using `.readlines`, then treated as disassembler input
 
-    normalizer: `Optional[Union[str, Normalizer]]`
+    normalizer: `Optional[Union[str, NormalizerType]]`
         the normalizer to use to force-renormalize the incoming CFG, or None to not normalize
     metadata: `Optional[dict]`
         a dictionary of metadata to add to this CFG
+
         NOTE: passed dictionary will be shallow copied
     using_tokens: `Optional[Union[dict[str, int], AtomicTokenDict]]`
         optional token dictionary to use when initializing and normalizing. Only used if normalizer is not None
     """
 
-    normalizer = None
+    normalizer: 'Union[NormalizerType, None]'
     """The normalizer used to normalize assembly lines in this ``CFG``, or None if they have not been normalized"""
 
-    metadata = None
+    metadata: 'dict'
     """Dictionary of metadata associated with this ``CFG``"""
 
-    functions_dict = None
+    functions_dict: 'dict[int, CFGFunction]'
     """Dictionary mapping integer function addresses to their ``CFGFunction`` objects"""
 
-    blocks_dict = None
+    blocks_dict: 'dict[int, CFGBasicBlock]'
     """Dictionary mapping integer basic block addresses to their ``CFGBasicBlock`` objects"""
 
-    def __init__(self, data=None, normalizer=None, metadata=None, using_tokens=None):
+    def __init__(self, data: 'Optional[Union[str, TextIO, Sequence[str]]]' = None, normalizer: 'Optional[Union[str, NormalizerType]]' = None, 
+                 metadata: 'Optional[dict]' = None, using_tokens: 'Optional[TokenDictType]' = None):
         # These store functions/blocks while allowing for O(1) lookup by address
-        self.functions_dict = {}
-        self.blocks_dict = {}
+        self.functions_dict: 'dict[int, CFGFunction]' = {}
+        self.blocks_dict: 'dict[int, CFGBasicBlock]' = {}
 
-        self.normalizer = None
-        self.metadata = {} if metadata is None else metadata.copy()
+        self.normalizer: 'Union[NormalizerType, None]' = None
+        self.metadata: 'dict' = {} if metadata is None else metadata.copy()
 
         # If data is not None, parse it
         if data is not None:
             parse_cfg_data(self, data)
-        
-        # Prune any of the padding node
-        self._prune_padding_nodes()
-
-        # Check for node labels
-        parse_node_labels(self)
 
         # Finally, normalize if needed
         if normalizer is not None:
             self.normalize(normalizer, using_tokens=using_tokens, inplace=True)
     
-    def _prune_padding_nodes(self):
-        """Prunes all of the padding nodes (nodes that only have NOP instructions for alignment)"""
-        # Got to keep track of the blocks to remove since dictionary will change size
-        blocks_to_remove = []
-
-        for block in self.blocks_dict.values():
-            if block.is_padding_node:
-
-                # Make sure this block has at most one edge out since it should be all NOP's
-                if len(block.edges_out) > 1:
-                    raise ValueError("Found a padding node with > 1 edges out!")
-                next_block = None if len(block.edges_out) == 0 else list(block.edges_out)[0].to_block
-
-                # Re-edge all of this block's incomming edges to point to either the one outgoing edge, or none, then
-                #   remove those edges
-                for edge in block.edges_in:
-                    if next_block is not None:
-                        new_edge = CFGEdge(edge.from_block, next_block, edge.edge_type)
-                        edge.from_block.edges_out.add(new_edge)
-                        next_block.edges_in.add(new_edge)
-                    edge.from_block.remove_edge(edge)
-
-                for edge in block.edges_out:
-                    edge.to_block.remove_edge(edge)
-                
-                # Remove the block from its function, checking for if it is a function entry
-                func = block.parent_function
-                if block.is_function_entry and next_block is not None and next_block.parent_function is func and func.address is not None:
-                    # Remove then add the function from the function_dict with new address
-                    del self.functions_dict[func.address]
-                    func.address = next_block.address
-                    self.functions_dict[func.address] = func
-                func.blocks.remove(block)
-
-                # Add the block to those to remove if its address is not None
-                if block.address is not None:
-                    blocks_to_remove.append(block)
-
-        # Remove all of the padding nodes from the blocks_dict
-        for block in blocks_to_remove:
-            del self.blocks_dict[block.address]
-
-    
-    def get_function(self, address, raise_err=True):
+    def get_function(self, address: 'AddressLike', raise_err: 'bool' = True) -> 'Union[CFGFunction, None]':
         """Returns the function in this ``CFG`` with the given address
 
         Args:
-            address (Union[str, int, Addressable]): a string/integer memory address, or an addressable object 
-                (EG: CFGBasicBlock/CFGFunction)
-            raise_err (bool, optional): if True, will raise an error if the function with the given memory address was 
-                not found, otherwise will return None. Defaults to True.
+            address (AddressLike): a string/integer memory address, or an addressable object (EG: CFGBasicBlock/CFGFunction)
+            raise_err (bool): if True, will raise an error if the function with the given memory address was 
+                not found, otherwise will return None
 
         Raises:
             ValueError: if the function with the given address could not be found
@@ -160,16 +89,16 @@ class CFG:
             raise ValueError("Could not find function with address: (decimal) %d, (hex) 0x%x" % (address, address))
         return self.functions_dict.get(address, None)
     
-    def get_function_by_name(self, name, raise_err=True):
+    def get_function_by_name(self, name: 'str', raise_err: 'bool' = True) -> 'Union[CFGFunction, None]':
         """Returns the function in this ``CFG`` with the given name
 
         NOTE: if the name of the function is None, then the expected string name to this method would be:
-        "__UNNAMED_FUNC_%d" % func.address
+        `"__UNNAMED_FUNC_%d" % func.address`
 
         Args:
             name (str): the name of the function to get
-            raise_err (bool, optional): if True, will raise an error if the function with the given memory address was 
-                not found, otherwise will return None. Defaults to True.
+            raise_err (bool): if True, will raise an error if the function with the given memory address was 
+                not found, otherwise will return None
 
         Raises:
             ValueError: if the function with the given address could not be found
@@ -178,20 +107,19 @@ class CFG:
             Union[CFGFunction, None]: the function with the given address, or None if that function does not exist
         """
         for func in self.functions_dict.values():
-            if func.nice_name == name:
+            if func.name == name:
                 return func
         if raise_err:
             raise ValueError("Could not find function with name: %s" % repr(name))
         return None
     
-    def get_block(self, address, raise_err=True):
+    def get_block(self, address: 'AddressLike', raise_err: 'bool' = True) -> 'Union[CFGBasicBlock, None]':
         """Returns the basic block in this CFG with the given address
 
         Args:
-            address (Union[str, int, Addressable]): a string/integer memory address, or an addressable object 
-                (EG: CFGBasicBlock/CFGFunction)
-            raise_err (bool, optional): if True, will raise an error if the basic block with the given memory address 
-                was not found, otherwise will return None. Defaults to True.
+            address (AddressLike): a string/integer memory address, or an addressable object (EG: CFGBasicBlock/CFGFunction)
+            raise_err (bool): if True, will raise an error if the function with the given memory address was 
+                not found, otherwise will return None
 
         Raises:
             ValueError: if the basic block with the given address could not be found
@@ -204,16 +132,18 @@ class CFG:
             raise ValueError("Could not find basic block with address: (decimal) %d, (hex) %x" % (address, address))
         return self.blocks_dict.get(address, None)
     
-    def get_block_containing_address(self, address, raise_err=True):
+    def get_block_containing_address(self, address: 'AddressLike', raise_err: 'bool' = True) -> 'Union[CFGBasicBlock, None]':
         """Returns the basic block in this CFG that contains the given address at the start of one of its instructions
 
         This will lazily compute an instruction lookup dictionary mapping addresses to the blocks that contain them
+
+        NOTE: this will only return a block if the address is either equal to the block's address, or if it is exactly
+        equal to one of the addresses for an assembly instruction in a block's `.asm_memory_addresses` list
         
         Args:
-            address (Union[str, int, Addressable]): a string/integer memory address, or an addressable object 
-                (EG: CFGBasicBlock/CFGFunction)
-            raise_err (bool, optional): if True, will raise an error if the basic block with the given memory address 
-                was not found, otherwise will return None. Defaults to True.
+            address (AddressLike): a string/integer memory address, or an addressable object (EG: CFGBasicBlock/CFGFunction)
+            raise_err (bool): if True, will raise an error if the function with the given memory address was 
+                not found, otherwise will return None
 
         Raises:
             ValueError: if the basic block containing the given address could not be found
@@ -224,23 +154,27 @@ class CFG:
         address = get_address(address)
 
         # Check if we have created an instruction lookup yet or not
-        if hasattr(self, '_inst_lookup'):
-            if address in self._inst_lookup:
-                return self._inst_lookup[address]
-            elif raise_err:
-                raise ValueError("Could not find basic block containing the address: (decimal) %d, (hex) %x" % (address, address))
-            else:
-                return None
-        
-        self._inst_lookup = {}
-
-        for block in self.blocks:
-            for block_addr in block.instruction_addresses:
-                self._inst_lookup[block_addr] = block
-        
-        return self.get_block_containing_address(address, raise_err=raise_err)
+        if address in self._inst_lookup:
+            return self._inst_lookup[address]
+        elif raise_err:
+            raise ValueError("Could not find basic block containing the address: (decimal) %d, (hex) %x" % (address, address))
+        else:
+            return None
     
-    def add_function(self, *functions, override=False):
+    @property
+    def _inst_lookup(self) -> 'dict[int, CFGBasicBlock]':
+        """Maps addresses to basic blocks containing those addresses. Will dynamically create dict if not present"""
+        # Make the instruction address lookup if it doesn't already exist
+        if not hasattr(self, '_inst_lookup_dict'):
+            self._inst_lookup_dict = {}
+
+            for block in self.blocks:
+                for block_addr in (block.asm_memory_addresses + [block.address]):
+                    self._inst_lookup_dict[block_addr] = block
+        
+        return self._inst_lookup_dict
+    
+    def add_function(self, *functions: 'CFGFunction', override: 'bool' = False) -> None:
         """Adds the given function(s) to this cfg. This should only be done once the given function(s) have been fully initialized
 
         This will do some housekeeping things such as:
@@ -267,27 +201,25 @@ class CFG:
                     raise ValueError("Function has address 0x%x which already exists in this CFG!" % func.address)
             
             func.parent_cfg = self
-            func.name = func.nice_name
+            self.functions_dict[func.address] = func
 
-            self.functions_dict[get_address(func.address)] = func
             for block in func.blocks:
                 # Check for bad basic blocks
                 if block.address is None:
                     raise ValueError("Block cannot have a None address when adding to CFG: %s" % block)
-                if block.address in self.blocks_dict:
+                if block.address in self._inst_lookup:
                     if not override:
                         raise ValueError("Basic block has address 0x%x which already exists in this CFG!" % block.address)
                 
                 block.parent_function = func
-                        
-                self.blocks_dict[get_address(block.address)] = block
-        self._update_blocks()
-    
-    def _update_blocks(self):
-        """Updates basic blocks in this cfg
-
-        Specifically, makes sure all the `.edges_out` and `.edges_in` are filled correctly for all basic blocks
-        """
+                self.blocks_dict[block.address] = block
+        
+            # Add all the instruction addresses if that has already been computed
+            if hasattr(self, '_inst_lookup_dict'):
+                for block in func.blocks:
+                    for block_addr in (block.asm_memory_addresses + [block.address]):
+                        self._inst_lookup[block_addr] = block
+                
         # Check the edges out
         for block in self.blocks:
             block.edges_out = set((CFGEdge(block, e[1] if isinstance(e[1], CFGBasicBlock) else self.get_block(e[1]), e[2]) \
@@ -302,8 +234,8 @@ class CFG:
             for edge in block.edges_in:
                 edge.from_block.edges_out.add(edge)
 
-    def insert_library(self, cfg, function_mapping, offset=None):
-        """Inserts the cfg of a shared library into this cfg
+    def insert_library(self, cfg: 'CFG', function_mapping: 'dict[str, int]', offset: 'Optional[int]' = None):
+        """WIP. Inserts the cfg of a shared library into this cfg
 
         This will modify the memory addresses of `cfg` (adding an appropriate offset), then add all of the functions and
         basic blocks from `cfg` into this cfg. Finally, external functions in this cfg that have implemented functions
@@ -407,47 +339,47 @@ class CFG:
             to_block.edges_in.add(new_edge)
     
     @property
-    def functions(self):
+    def functions(self) -> 'list[CFGFunction]':
         """A list of functions in this CFG (in order of memory address)"""
         return [f[1] for f in sorted(self.functions_dict.items(), key=lambda x: x[0])]
     
     @property
-    def blocks(self):
+    def blocks(self) -> 'list[CFGBasicBlock]':
         """A list of basic blocks in this CFG (in order of memory address)"""
         return [b[1] for b in sorted(self.blocks_dict.items(), key=lambda x: x[0])]
     
     @property
-    def num_blocks(self):
+    def num_blocks(self) -> 'int':
         """The number of basic blocks in this cfg"""
         return len(self.blocks_dict)
     
     @property
-    def num_functions(self):
+    def num_functions(self) -> 'int':
         """The number of functions in this cfg"""
         return len(self.functions_dict)
 
     @property
-    def num_edges(self):
+    def num_edges(self) -> 'int':
         """The number of edges in this cfg"""
         return sum(b.num_edges for b in self.blocks_dict.values())
 
     @property
-    def num_asm_lines(self):
+    def num_asm_lines(self) -> 'int':
         """The number of asm lines across all blocks in this cfg"""
         return sum(b.num_asm_lines for b in self.blocks_dict.values())
 
     @property
-    def asm_counts(self):
+    def asm_counts(self) -> 'Mapping[str, int]':
         """A collections.Counter() of all unique assembly lines and their counts in this cfg"""
         return sum((f.asm_counts for f in self.functions_dict.values()), Counter())
     
     @property
-    def edges(self):
+    def edges(self) -> 'list[CFGEdge]':
         """A list of all outgoing ``CFGEdge``'s in this ``CFG``"""
         return [e for b in self.blocks for e in b.edges_out]
     
     @property
-    def architecture(self):
+    def architecture(self) -> 'Architectures':
         """Returns the architecture being used. Currently a WIP
         
         Checks for an 'arch' or 'architecture' key in the metadata and returns it if it is known. Can currently return:
@@ -458,26 +390,25 @@ class CFG:
                 arch = self.metadata[k]
                 break
         else:
-            raise ValueError("Could not find 'arch' or 'architecture' key in metadata")
+            auto_detect_assembly_language(self)
+            if 'architecture' in self.metadata:
+                arch = self.metadata['architecture']
+            else:
+                raise KeyError("Could not find 'arch' or 'architecture' key in metadata, and failed to autodetect")
         
-        if arch in ['x86']:
-            return Architectures.X86
-        elif arch in ['java', 'java-bytecode']:
-            return Architectures.JAVA
-        else:
-            raise ValueError("Unknown architecture value: %s" % repr(arch))
+        return get_architecture(arch)
     
-    def update_metadata(self, other):
+    def update_metadata(self, other: 'dict') -> 'CFG':
         """Updates this CFG's metadata dictionary with the given dictionary, and returns self"""
         self.metadata.update(other)
         return self
     
-    def set_tokens(self, tokens):
+    def set_tokens(self, tokens: 'TokenDictType') -> 'CFG':
         """Sets this CFG's tokens to the given tokens, and returns self"""
         self.tokens = tokens
         return self
 
-    def to_adjacency_matrix(self, type: str = 'np', sparse: bool = False):
+    def to_adjacency_matrix(self, type: 'str' = 'np', sparse: 'bool' = False) -> 'Union[np.ndarray, torch.Tensor]':
         """Returns an adjacency matrix representation of this cfg's graph connections
 
         Currently is slow because I just convert to a MemCFG, then call that object's to_adjacency_matrix(). I should
@@ -489,7 +420,7 @@ class CFG:
             - 1: Normal edge
             - 2: Function call edge
 
-        See :func:`bincfg.memcfg.to_adjacency_matrix` for more details
+        See :func:`~bincfg.memcfg.to_adjacency_matrix` for more details
 
         Args:
             type (str, optional): the type of matrix to return. Defaults to 'np'. Can be:
@@ -508,240 +439,20 @@ class CFG:
         Returns:
             Union[np.ndarray, torch.Tensor]: an adjacency matrix representation of this ``CFG``
         """
-        from .mem_cfg import MemCFG
-        return MemCFG(self, normalizer='base' if self.normalizer is None else None).to_adjacency_matrix(type=type, sparse=sparse)
+        return bincfg.MemCFG(self, normalizer='base' if self.normalizer is None else None).to_adjacency_matrix(type=type, sparse=sparse)
     
-    def get_compressed_stats(self, tokens, ret_pickled=False):
-        """Returns some stats about this CFG in a compressed version
-        
-        These are meant to be very basic stats useful for simple comparisons (EG: dataset subsampling). These values
-        are highly compressed/convoluted as they are used for generating statistics on 100+ million cfg's on HPC, and 
-        thus output space requirements outweigh single-graph compute time. Will return a single numpy array 
-        (1-d, dtype=np.uint8) with indices/values:
-
-            - [0:12]: graph-level stats (number of nodes, number of functions, number of assembly lines), each a 4-byte 
-              unsigned integer of the exact value in the above order. The bytes are always stored as little-endian.
-
-            - [12:20]: node degree histogram. Counts the number of nodes with degrees: 0 incomming, 1 incomming, 2 incomming,
-              3+ incomming, 0 outgoing, 1 outgoing, 2 outgoing, 3+ outgoing. See below in things that are not
-              in these stats for reasoning. Values will be a list in the above order:
-
-              [0-in, 1-in, 2-in, 3+in, 0-out, 1-out, 2-out, 3+out]
-
-              Reasoning: the vast majority of all nodes will have 0, 1 or 2 incomming normal edges, and 0, 1, or 2 outgoing
-              normal edges, so this should be a fine way of storing that data for my purposes. Function call edges will
-              be handled by the function degrees.
-
-            - [20:46]: a histogram of node sizes (number of assembly lines per node). Histogram bins (left-inclusive, 
-              right-exclusive, 26 of them) will be:
-
-              [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 50, 60, 80, 100, 150, 200+]
-
-              Reasoning: different compiler optimizations (inlining, loop unrolling, AVX instructions, etc.) will likely
-              drastically change the sizes of nodes. The histogram bin edges were chosen arbitrarily in a way that tickled
-              my non-neurotypical, nice-number-loving brain.
-
-            - [46:72]: a histogram of (undirected) function degrees (in the function call graph). Histogram bins 
-              (left-inclusive, right-exclusive, 26 of them) will be:
-
-              [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 50, 60, 80, 100, 150, 200+]
-
-              Reasoning: most functions will only be called a relatively small number of unique times across the 
-              binary (EG: <10), while those that are called much more are likely
-
-            - [72:93]: a histogram of function sizes (number of nodes in each function). Histogram bins (left-inclusive, 
-              right-exclusive, 21 of them) will be:
-
-              [0, 1, 2, 3, 4, 6, 8, 10, 15, 20, 25, 30, 40, 60, 80, 100, 150, 200, 300, 400, 500+]
-              
-              Reasoning: different compiler optimizations (especially inlining) will drastically change the size of 
-              functions. The histogram bins can be more spread out (IE: not as focused on values near 0, and across
-              a larger range) since the number of nodes in a function has a noticeably different distribution than,
-              say, the histogram of node sizes
-
-            - [93:]: a histogram of assembly tokens. One value per token. You should make sure the normalization method
-              you are using is good, and doesn't create too many unique tokens.
-              
-              Reasoning: obvious
-        
-        The returned array will be of varrying length based on the number of unique tokens in the tokens dictionary.
-        
-        Values above (unless otherwise stated) are stored as 1-byte percentages of the number of nodes in the graph that
-        are in that bin. EG: 0 would mean there are 0 nodes with that value, 1 would mean between [0, 1/255) of the 
-        nodes/functions in the graph have that value, 2 would be between [1/255, 2/255), etc., until a 255 which would
-        be [245/255, 1.0]
-        
-        Things that are NOT in these stats and reasons:
-
-            - Other node degrees: these likely don't change too much between programs (specifically their normalized values)
-              as even with different programs/compiler optimizations. Changes between cfg's will likely only change the 
-              relative proportions of nodes with 1 vs. 2 incoming edges, and those with 1 vs. 2 vs. 3 outgoing edges. Any
-              other number of edges are pretty rare, hence why we only keep those edge measures and only those using 
-              normal edges (since function call edges will be gathered in the func_degree_hist and would mess with this premise)
-            - Edge statistics (EG: number of normal vs. function call edges): this information is partially hidden in the
-              histograms already present, and exact values do not seem too important
-            - Other centrality measures: I belive (but have not proven) that node-based centrality measures would not
-              contain enough information to display differences between CFG's to be worth it. Because of the linear
-              nature of sequential programs, I believe their centrality measures would be largely similar and/or
-              dependant on other graph features already present in the stats above (EG: number of nodes in a function).
-              I think any differences between centrality measurements on these graphs will be mostly washed out by the
-              linear nature, especially since we would only be looking at normal edges, not function call ones. The only
-              differences that would be highlighted would be information about the number of branches/loops in each
-              function (which is already partially covered by the assembly line info), and a small amount of information
-              on where within functions these branches tend to occur. However, combining these features into graph-level
-              statistics would likely dilute these differences even further. It may, however, be useful to include one
-              or more of these measures on the function call graph, but I am on the fence about its usefulness vs extra
-              computation time/space required. I think for my purposes, the stats above work just fine
-            
-        Args:
-            tokens (Union[Dict[str, int], AtomicData]): the token dictionary to use and possibly add to. Can also be
-                an AtomicData object for atomic token dictionary file.
-            ret_pickled (bool): if True, will return the data pickled with pickle.dumps(), otherwise if False, will
-                return the normal numpy array
-        
-        Returns:
-            np.ndarray: the compressed stats, a numpy 1-d uint8 array of shape (97 + len(tokens), )
-        """
-        # Get the token histogram
-        token_counts = self.asm_counts
-
-        # Create the token dictionary and update it with the new tokens
-        token_dict = tokens if tokens is not None else {}
-        if isinstance(token_dict, AtomicTokenDict):
-            token_dict.addtokens(*list(token_counts.keys()))
-        else:
-            for k in token_counts:
-                token_dict.setdefault(k, len(token_dict))
-
-        # Make sure this starts off a bit larger than the final length. I think the current val would be 97, but I made
-        #   it a little larger for some more wiggle room. The correct size is returned anyways
-        ret = np.zeros([100 + len(token_dict)], dtype=np.uint8)
-        curr_idx = 0
-
-        # Adding graph statistics as multi-byte unsigned integer values
-        nb = GLS_DTYPE().nbytes
-        for f in GRAPH_LEVEL_STATS_FUNCS:
-            ret[curr_idx: curr_idx + nb] =  _get_np_int_as_little_endian_list(GLS_DTYPE(f(self)))
-            curr_idx += nb
-
-        # Get the node degree histograms
-        in_0, in_1, in_2, in_other, out_0, out_1, out_2, out_other = 0, 0, 0, 0, 0, 0, 0, 0
-        for block in self.blocks:
-            n_in, n_out = block.get_sorted_edges(edge_types=EdgeType.NORMAL)
-
-            # Check edges in
-            if len(n_in) == 0:
-                in_0 += 1
-            elif len(n_in) == 1:
-                in_1 += 1
-            elif len(n_in) == 2:
-                in_2 += 1
-            else:
-                in_other += 1
-
-            # Check edges out
-            if len(n_out) == 0:
-                out_0 += 1
-            elif len(n_out) == 1:
-                out_1 += 1
-            elif len(n_out) == 2:
-                out_2 += 1
-            else:
-                out_other += 1
-        
-        num_blocks = self.num_blocks
-        for v in [in_0, in_1, in_2, in_other, out_0, out_1, out_2, out_other]:
-            ret[curr_idx] = _get_single_byte_ratio(v, num_blocks)
-            curr_idx += 1
-
-        # Get the node size histogram
-        curr_idx = _get_single_byte_histogram([len(b.asm_lines) for b in self.blocks_dict.values()], 
-            NODE_SIZE_HIST_BINS, ret, curr_idx)
-
-        # Get the function undirected degree histogram
-        curr_idx = _get_single_byte_histogram([f.num_fc_edges for f in self.functions_dict.values()], 
-            FUNCTION_DEGREE_HIST_BINS, ret, curr_idx)
-        
-        # Get the function size histogram
-        curr_idx = _get_single_byte_histogram([f.num_blocks for f in self.functions_dict.values()],
-            FUNCTION_SIZE_HIST_BINS, ret, curr_idx)
-        
-        # Get the asm line histogram
-        # Invert the token dict to get a mapping from index to asm line
-        inv_token_dict = {v:k for k, v in token_dict.items()}
-        num_asm_lines = sum(v for v in token_counts.values())
-        ret[curr_idx: curr_idx + len(inv_token_dict)] = [_get_single_byte_ratio(token_counts[inv_token_dict[i]], num_asm_lines) for i in range(len(inv_token_dict))]
-        curr_idx += len(inv_token_dict)
-
-        ret = ret[:curr_idx]
-
-        if ret_pickled:
-            return pickle.dumps(ret)
-        return ret
-    
-    @classmethod
-    def uncompress_stats(cls, stats, dtype=np.uint32):
-        """Uncompressed the stats from cfg.get_compressed_stats()
-        
-        Will return a numpy array with specified dtype (defaults to np.uint32) of stats in the same order they appreared 
-        in get_compressed_stats(). The size will decrease by around 12 indices as the initial 4-byte values are converted
-        back into a one-index integer.
+    def normalize(self, normalizer: 'Union[str, NormalizerType]', using_tokens: 'Optional[TokenDictType]' = None, 
+                  inplace: 'bool' = True, force_renormalize: 'bool' = False) -> 'CFG':
+        """Normalizes this cfg.
 
         Args:
-            stats (np.ndarray): either a 1-d or 2-d numpy array of stats. If 2-d, then it is assumed that these are multiple
-                stats for multiple cfgs, one cfg per row
-            dtype (np.dtype): the numpy dtype to return as. Defaults to np.uint32
-        
-        Returns:
-            np.ndarray: either a 1-d or 2-d numpy array of uncompressed stats, depending on what was passed to `stats`
-        """
-        if stats.ndim not in [1, 2]:
-            raise ValueError("`stats` array must have dimension 1 or 2, not %d" % stats.ndim)
-        
-        # Get the return array, removing the elements for the multi-byte ints. Determine what dimension to be using
-        if stats.ndim == 2:
-            ret = np.empty([stats.shape[0], stats.shape[1] - (len(GRAPH_LEVEL_STATS_FUNCS) * (GLS_DTYPE().nbytes - 1))], dtype=np.uint32)
-            ret_one_dim = False
-        else:
-            ret = np.empty([1, stats.shape[0] - (len(GRAPH_LEVEL_STATS_FUNCS) * (GLS_DTYPE().nbytes - 1))], dtype=np.uint32)
-            stats = [stats]
-            ret_one_dim = True
-
-        # Iterate through all rows in stats to uncompress
-        for row_idx, stat_arr in enumerate(stats):
-            stats_idx = ret_idx = 0
-
-            # Unpack the multi-byte ints
-            nb = GLS_DTYPE().nbytes
-            for _ in GRAPH_LEVEL_STATS_FUNCS:
-                ret[row_idx, ret_idx] = _get_np_int_from_little_endian_list(stat_arr[stats_idx: stats_idx + nb])
-                stats_idx += nb
-                ret_idx += 1
-            
-            num_blocks, num_functions, num_asm_lines = ret[row_idx, 0:3]
-
-            # Unpack the histograms: node degrees, node sizes, function degrees, function sizes, asm lines
-            ret_idx, stats_idx = _uncompress_hist(row_idx, ret, stat_arr[stats_idx: stats_idx + 8], ret_idx, stats_idx, num_blocks)
-            ret_idx, stats_idx = _uncompress_hist(row_idx, ret, stat_arr[stats_idx: stats_idx + len(NODE_SIZE_HIST_BINS)], ret_idx, stats_idx, num_blocks)
-            ret_idx, stats_idx = _uncompress_hist(row_idx, ret, stat_arr[stats_idx: stats_idx + len(FUNCTION_DEGREE_HIST_BINS)], ret_idx, stats_idx, num_functions)
-            ret_idx, stats_idx = _uncompress_hist(row_idx, ret, stat_arr[stats_idx: stats_idx + len(FUNCTION_SIZE_HIST_BINS)], ret_idx, stats_idx, num_functions)
-            ret_idx, stats_idx = _uncompress_hist(row_idx, ret, stat_arr[stats_idx:], ret_idx, stats_idx, num_asm_lines)
-
-        # Return a 1-d if needed
-        ret = ret.reshape([-1]) if ret_one_dim else ret
-        return ret.astype(dtype)
-    
-    def normalize(self, normalizer, using_tokens=None, inplace=True, force_renormalize=False):
-        """Normalizes this cfg in-place.
-
-        Args:
-            normalizer (Union[str, Normalizer], optional): the normalizer to use. Can be a ``Normalizer`` object, or a 
-                string of a built-in normalizer to use.
-            using_tokens (TokenDictType): tokens to use when normalizing
-            inplace (bool, optional): whether or not to normalize inplace. Defaults to True.
-            force_renormalize (bool, optional): by default, this method will only normalize this cfg if the passed 
+            normalizer (Union[str, NormalizerType]): the normalizer to use. Can be a ``Normalizer`` object, or a 
+                string of a built-in normalizer to use
+            using_tokens (Optional[TokenDictType]): token dictionary to use when normalizing, or None to normalize from scratch
+            inplace (bool): whether or not to normalize inplace
+            force_renormalize (bool): by default, this method will only normalize this cfg only if the passed 
                 `normalizer` is != `self.normalizer`. However if `force_renormalize=True`, then this will be renormalized
-                even if it has been previously normalized with the same normalizer. Defaults to False.
+                even if it has been previously normalized with the same normalizer
 
         Returns:
             CFG: this ``CFG`` normalized
@@ -749,7 +460,7 @@ class CFG:
         return normalize_cfg_data(self, normalizer=normalizer, using_tokens=using_tokens, inplace=inplace, 
                                   force_renormalize=force_renormalize)
 
-    def to_networkx(self):
+    def to_networkx(self) -> 'networkx.MultiDiGraph':
         """Converts this CFG to a networkx DiGraph() object
         
         Requires that networkx be installed.
@@ -758,8 +469,8 @@ class CFG:
 
             - 'normalizer': string name of normalizer, or None if it had none
             - 'metadata': a dictionary of metadata
-            - functions: a dictionary mapping integer function addresses to named tuples containing its data with the
-              structure ('name': Union[str, None], 'is_extern_func': bool, 'blocks': Tuple[int, ...]).
+            - 'functions': a dictionary mapping integer function addresses to named tuples containing its data with the
+               structure ('name': `Union[str, None]`, 'is_extern_func': `bool`, 'blocks': `Tuple[int, ...]`, 'metadata': `dict`).
 
                 * The 'name' element (first element) is a string name of the function, or None if it doesn't have a name
                 * The 'is_extern_func' element (second element) is True if this function is an extern function, False otherwise.
@@ -769,8 +480,8 @@ class CFG:
                 * The 'blocks' element (third element) is an arbitrary-length tuple of integers, each integer being the
                   memory address (equivalently, the block_id) of a basic block that is a part of that function. Each
                   basic block is only part of a single function, and each function should have at least one basic block
-            
-              NOTE: the ADDRESS value will be and uppercase hex starting with a '0x'
+                * The 'metadata' element (fourth element) is a dictionary of metadata associated with that function.
+                  May be empty.
         
         NOTE: we use a multidigraph because edges are directed (in order of control flow), and it is theoretically
         possible (and occurs in some data) to have a node that calls another node, then has a normal edge back out
@@ -779,15 +490,14 @@ class CFG:
         Then, each basic block will be added to the graph as nodes. Their id in the graph will be their integer address.
         Each block will have the following attributes:
 
-            - 'asm_lines' (Tuple[Tuple[int, str]]): tuple of assembly lines. Each assembly line is a (address, line)
-              tuple where `address` is the integer address of that assembly line, and `line` is a cleaned, space-separated
-              string of tokens in that assembly line
-            - 'labels' (Set[str]): a set of string labels for nodes, empty meaning it is unlabeled
+            - 'asm_lines' (Tuple[str]): tuple of string assembly lines
+            - 'asm_memory_addresses (Tuple[int]): tuple of integer assembly line memory addresses, one for each line
+              in order. Unless, if these addresses are not present, then this will be an empty tuple
+            - 'metadata' (dict): dictionary (possibly empty) of metadata associated with this basic block
         
         Finally, all edges will be added (directed based on control flow direction), and with the attributes:
 
-            - 'edge_type' (str): the edge type, will be 'normal' for normal edges and 'function_call' for function call
-              edges
+            - 'edge_type' (str): the edge type, will be 'normal' for normal edges and 'function_call' for function call edges
 
         """
         # Done like this so I have IDE autocomplete while making sure the package is installed
@@ -795,15 +505,15 @@ class CFG:
         import networkx
 
         # Add all of the functions to a dictionary to set as an attribute on the graph
-        functions = {func.address: _NetXTuple(func.name, func._is_extern_function, tuple(b.address for b in func.blocks))
+        functions = {func.address: _NetXTuple(func.name, func._is_extern_function, tuple(b.address for b in func.blocks), func.metadata.copy())
                      for func in self.functions_dict.values()}
 
-        ret = networkx.MultiDiGraph(normalizer=copy.deepcopy(self.normalizer), functions=functions, metadata=self.metadata)
+        ret = networkx.MultiDiGraph(normalizer=copy.deepcopy(self.normalizer), functions=functions, metadata=self.metadata.copy())
         
         # Add all of the blocks to the graph
         for block in self.blocks_dict.values():
-            ret.add_node(block.address, labels=set(NODE_LABELS_INT_TO_STR[l] for l in block.labels),
-                         asm_lines=tuple((a, l if isinstance(l, str) else ' '.join(l)) for a, l in block.asm_lines))
+            ret.add_node(block.address, metadata=block.metadata.copy(), asm_memory_addresses=tuple(block.asm_memory_addresses),
+                         asm_lines=tuple(block.asm_lines))
         
         # Finally, add all the edges
         for edge in self.edges:
@@ -812,162 +522,39 @@ class CFG:
         return ret
     
     @classmethod
-    def from_networkx(cls, graph, cfg=None):
+    def from_networkx(cls, graph: 'networkx.MultiDiGraph') -> 'CFG':
         """Converts a networkx graph to a CFG
 
         Expects the graph to have the exact same structure as is shown in CFG().to_networkx()
-
-        You can optionally pass a cfg, in which case this data will be added to (and override) that cfg
         """
-        if cfg is None:
-            ret = CFG(normalizer=graph.graph['normalizer'], metadata=graph.graph['metadata'])
-        else:
-            ret = cfg
-            ret.metadata.update(graph.graph['metadata'])
-            if graph.graph['normalizer'] is not None:
-                ret.normalize(graph.graph['normalizer'])
+        ret = CFG(normalizer=graph.graph['normalizer'], metadata=graph.graph['metadata'])
 
         ret.add_function(*[
-            CFGFunction(address=addr, name=name, is_extern_func=ef, blocks=[
+            CFGFunction(address=addr, name=name, is_extern_func=ef, metadata=meta, blocks=[
                 CFGBasicBlock(
                     address=block_addr,
-                    labels=set(NODE_LABELS_STR_TO_INT[l] for l in graph.nodes[block_addr]['labels']),
                     edges_out=[(None, a, et) for _, a, et in graph.edges(block_addr, keys=True)],
-                    asm_lines=[(a, l if ret.normalizer is None else l.split(' ')) for a, l in graph.nodes[block_addr]['asm_lines']]
+                    asm_lines=graph.nodes[block_addr]['asm_lines'],
+                    asm_memory_addresses=graph.nodes[block_addr]['asm_memory_addresses'],
+                    metadata=graph.nodes[block_addr]['metadata']
                 )
                 for block_addr in blocks
             ])
-            for addr, (name, ef, blocks) in graph.graph['functions'].items()
-        ])
-
-        return ret
-
-    def to_cfg_dict(self):
-        """Converts this cfg to a dictionary of cfg information
-        
-        The cfg dictionary will have the structure::
-
-            {
-                'normalizer': the string name of the normalizer used,
-                'metadata': a dictionary of metadata,
-                'functions': {
-                
-                    func_address_1: {
-                        'name' (str): string name of the function, or None if it has no name,
-                        'is_extern_func' (bool): True if this function is an extern function, False otherwise.
-                            An extern function is one that is located in an external library intended to be found at 
-                            runtime, and that doesn't have its code here in the CFG, only a small function meant to jump to 
-                            the external function when loaded at runtime
-
-                        'blocks': {
-                            block_address_1: {
-                                'labels' (Set[str]): a set of string labels for nodes, empty meaning it is unlabeled
-                                'edges_out' (Tuple[Tuple[int, str], ...]): tuple of all outgoing edges. Each 'edge' is a tuple
-                                    of (other_basic_block_address: int, edge_type: str), where `edge_type` can be 'normal'
-                                    for a normal edge and 'function_call' for a function call edge
-                                'asm_lines' (Tuple[Tuple[int, str], ...]): tuple of all assembly lines in this block. Each 
-                                    assembly line is a (address, line) tuple where `address` is the integer address of that 
-                                    assembly line, and `line` is a cleaned, space-separated string of tokens in that assembly 
-                                    line
-                            },
-
-                            block_address_1: ...,
-                            ...
-                        }
-
-                    },
-
-                    func_address_2: ...,
-                    ...
-                }
-            }
-
-        - func_address_X: integer address of that function
-        - block_address_X: integer address of that block
-        """
-        return {
-            'normalizer': copy.deepcopy(self.normalizer),
-            'metadata': self.metadata,
-            'functions': {
-                func.address: {
-                    'name': func.name,
-                    'is_extern_func': func._is_extern_function,
-                    'blocks': {
-                        block.address: {
-                            'labels': set(NODE_LABELS_INT_TO_STR[l] for l in block.labels),
-                            'edges_out': tuple((e.to_block.address, e.edge_type.name.lower()) for e in block.edges_out),
-                            'asm_lines': tuple((a, l if isinstance(l, str) else ' '.join(l)) for a, l in block.asm_lines)
-                        }
-                        for block in func.blocks
-                    }
-                }
-                for func in self.functions
-            }
-        }
-    
-    @classmethod
-    def from_cfg_dict(cls, cfg_dict, cfg=None):
-        """Converts a cfg dict object into a CFG
-        
-        Expects the cfg_dict to have the exact same structure as that listed in CFG().to_cfg_dict()
-
-        You can optionally pass a cfg, in which case this data will be added to (and override) that cfg
-        """
-        if cfg is None:
-            ret = CFG(normalizer=cfg_dict['normalizer'], metadata=cfg_dict['metadata'])
-        else:
-            ret = cfg
-            ret.metadata.update(cfg_dict['metadata'])
-            if cfg_dict['normalizer'] is not None:
-                ret.normalize(cfg_dict['normalizer'])
-
-        ret.add_function(*[
-            CFGFunction(address=func_addr, name=func_dict['name'], is_extern_func=func_dict['is_extern_func'], blocks=[
-                CFGBasicBlock(
-                    address=block_addr,
-                    labels=set(NODE_LABELS_STR_TO_INT[l] for l in block_dict['labels']),
-                    edges_out=[(None, a, et) for a, et in block_dict['edges_out']],
-                    asm_lines=[(a, l if ret.normalizer is None else \
-                                    [l] if ret.normalizer.tokenization_level == TokenizationLevel.INSTRUCTION else \
-                                    l.split(' ')) for a, l in block_dict['asm_lines']]
-                )
-                for block_addr, block_dict in func_dict['blocks'].items()
-            ])
-            for func_addr, func_dict in cfg_dict['functions'].items()
+            for addr, (name, ef, blocks, meta) in graph.graph['functions'].items()
         ])
 
         return ret
     
-    def save(self, path):
-        """Saves this CFG to path"""
-        with open(path, 'wb') as f:
-            pickle.dump(self, f)
+    def copy(self) -> 'CFG':
+        return pickle.loads(pickle.dumps(self))
     
-    def dumps(self):
-        """Returns this object pickled with pickle.dumps()"""
-        return pickle.dumps(self)
-    
-    @classmethod
-    def load(cls, path):
-        """Loads this CFG from path"""
-        with open(path, 'rb') as f:
-            return pickle.load(f)
-    
-    def __getstate__(self):
-        """State for pickling
-        
-        Pickling should be done like so:
-
-            - normalizers are wrapped with _Pickled_Normalizer() object
-            - edges are converted into 3-tuples of (from_address: int, to_address: int, edge_type: EdgeType) (done in
-              CFGBasicBlock)
-            - references to parent_objects are removed
-        """
-        state = {k: v for k, v in self.__dict__.items() if k not in ['functions_dict', 'blocks_dict', '_inst_lookup']}
+    def __getstate__(self) -> 'dict':
+        """State for pickling"""
+        state = {k: v for k, v in self.__dict__.items() if k not in ['functions_dict', 'blocks_dict', '_inst_lookup_dict']}
         state['functions'] = tuple(f._get_pickle_state() for f in self.functions_dict.values())
         return state
     
-    def __setstate__(self, state):
+    def __setstate__(self, state: 'dict'):
         """State for unpickling"""
         for k, v in state.items():
             if k == 'functions':
@@ -991,43 +578,24 @@ class CFG:
             if hasattr(block, '_temp_edges_out'):
                 del block._temp_edges_out
     
-    def __eq__(self, other):
+    def __eq__(self, other: 'Any') -> 'bool':
         return isinstance(other, CFG) and all(eq_obj(self, other, selector=s) for s in ['normalizer', 'functions_dict', 'metadata'])
     
-    def __hash__(self):
-        return hash_obj([self.functions_dict, self.metadata], return_int=True)
+    def __hash__(self) -> 'int':
+        return hash_obj([self.functions_dict, self.metadata, self.normalizer], return_int=True)
 
-    def __str__(self):
+    def __str__(self) -> 'str':
         norm_str = 'no normalizer' if self.normalizer is None else ('normalizer: ' + repr(str(self.normalizer)))
         return "CFG with %s and %d functions, %d basic blocks, %d edges, and %d lines of assembly\nMetadata: %s" \
             % (norm_str, len(self.functions_dict), self.num_blocks, self.num_edges, self.num_asm_lines, self.metadata)
 
-    def __repr__(self):
+    def __repr__(self) -> 'str':
         return str(self)
     
-    def hash(self, strict=True, num_wl_iters=3):
-        """Returns a hash of this CFG
-        
-        Args:
-            strict (str): whether or not to do a strict hashing. If true, then this does the strictest hashing, including 
-                things like names, addresses, etc. This is the default behavior, and the same as the __hash__ function. If
-                False, then this does a less strict hashing using only things like graph/function topology and assembly
-                lines (not addresses). This performs multiple passes of the weisfeiler lehman kernel to produce the final
-                hash. The nodes are then aggregated into function hashes, and the WL kernel is applied to the function
-                call graph multiple times as well. Those function hashes are then aggregated into the final binary hash.
-                This way, we should be invariant to node rearrangings (within the same function) as well as function
-                rearrangings. This, however, is not perfect. Any two CFG's with differing hashes are for sure different
-                (there are no false negatives), however it is possible for two differing CFG's to hash to the same
-                value depending on graph structure (although, it is unlikely for genuine binaries)
-            num_wl_iters (int): the number of iterations of the weisfeiler lehman kernel to apply
-        """
-        if strict:
-            return self.__hash__()
-        
-        return bincfg.MemCFG(self, normalizer='base').hash(strict=False, num_wl_iters=num_wl_iters)
-    
-    def get_cfg_build_code(self):
-        """Returns python code that will build the given cfg. Used for testing
+    def get_cfg_build_code(self) -> 'str':
+        """Returns python code that will build the given cfg. Used for testing.
+
+        This will return the plain code itself to build, with no initial tabs.
 
         Args:
             cfg (CFG): the cfg
@@ -1035,82 +603,57 @@ class CFG:
         Returns:
             str: string of python code to build the cfg
         """
-        all_functions = "\n    ".join([("%d: CFGFunction(parent_cfg=__auto_cfg, address=%d, name=%s, is_extern_func=%s)," % 
-            (f.address, f.address, repr(f.name), f.is_extern_function)) for f in self.functions])
+        all_functions = "\n    ".join([("%d: CFGFunction(parent_cfg=__auto_cfg, address=%d, name=%s, is_extern_func=%s, metadata=%s)," % 
+            (f.address, f.address, repr(f.name), f.is_extern_function, repr(f.metadata))) for f in self.functions])
         
-        all_blocks = "\n    ".join([("%s: CFGBasicBlock(parent_function=__auto_functions[%d], address=%d, labels=%s, asm_lines=[\n        %s\n    ])," % 
-            (b.address, b.parent_function.address, b.address, repr(b.labels), 
-                '\n        '.join([("(%d, %s)," % (addr, repr(inst))) for addr, inst in b.asm_lines])
+        all_blocks = "\n    ".join([("%s: CFGBasicBlock(parent_function=__auto_functions[%d], address=%d, asm_memory_addresses=%s, metadata=%s, asm_lines=[\n        %s\n    ])," % 
+                (b.address, b.parent_function.address, b.address, b.asm_memory_addresses, repr(b.metadata), '\n        '.join([repr(l) + ',' for l in b.asm_lines])
             )) for b in self.blocks])
         
         all_edges = "\n\n".join([("__auto_blocks[%d].edges_out = set([\n    %s\n])" % (b.address, 
             "\n    ".join([("CFGEdge(from_block=__auto_blocks[%d], to_block=__auto_blocks[%d], edge_type=EdgeType.%s)," % (edge.from_block.address, edge.to_block.address, edge.edge_type.name)) for edge in b.edges_out])
         )) for b in self.blocks])
 
-        add_blocks = '\n\n'.join([("__auto_functions[%d].blocks = set([\n    %s\n])" % (f.address,
+        add_blocks = '\n\n'.join([("__auto_functions[%d].blocks = [\n    %s\n]" % (f.address,
             "\n    ".join([("__auto_blocks[%d]," % b.address) for b in f.blocks])
         )) for f in self.functions])
 
         return _CFG_BUILD_CODE_STR % (self.num_functions, self.num_blocks, self.num_edges, self.num_asm_lines, all_functions,
             all_blocks, all_edges, add_blocks)
-
-
-def _get_np_int_as_little_endian_list(val):
-    """returns a list of bytes for the given numpy integer in little-endian order"""
-    ret = list(val.tobytes())
-
-    # Get the byte order and check if we need to swap endianness
-    bo = np.dtype(GLS_DTYPE).byteorder
-    if (bo == '=' and sys.byteorder == 'big') or bo == '>':
-        return reversed(ret)
-
-    return ret
-
-
-def _get_np_int_from_little_endian_list(l):
-    """Returns a numpy integer from the given list of little-endian bytes
     
-    NOTE: `l` MUST be either a python built-in (list/tuple/etc), or a numpy array with dtype np.uint8!
-    """
-    return int.from_bytes(l, byteorder='little', signed=False)
+
+# Dictionary mapping architectures to known matches that uniquely determine architecture (at least, for known supported architectures)
+_DETECT_ARCH_START_DELIM = r'[^><"\']*(?<![a-z0-9])'
+_DETECT_ARCH_END_DELIM = r'(?:[^a-z0-9].*|$)'
+DETECT_ARCHITECTURE_RES = {
+    # Basically, just any common keyword that isn't in Java for now
+    Architectures.X86: [
+        r'{start}(?:add|mov|test|xor){end}'.format(start=_DETECT_ARCH_START_DELIM, end=_DETECT_ARCH_END_DELIM),  
+    ],
+
+    # All of the 'invoke' commands for calls. Java should always invoke <init> at some point...
+    Architectures.JAVA: [
+        r'{start}invoke(?:virtual|interface|special|static|dynamic){end}'.format(start=_DETECT_ARCH_START_DELIM, end=_DETECT_ARCH_END_DELIM),  
+    ],
+}
+DETECT_ARCHITECTURE_RES = {k: [re.compile(x) for x in v] for k, v in DETECT_ARCHITECTURE_RES.items()}
 
 
-def _get_single_byte_ratio(val, total):
-    """Computes the ratio val/total (assumes total >= val), and converts that resultant value to a byte
+def auto_detect_assembly_language(cfg: 'CFG') -> 'None':
+    """Attempts to detect the assembly language used in the given CFG, settings its 'architecture' key in the metadata if successful
     
-    The byte value will be determined based on what 'chunk' in the range [0, 1] the value is, with there being 256
-    available chunks for one byte. EG: 0 would mean val == 0, 1 would mean val is between [0, 1/255), 2 would be between
-    [1/255, 2/255), etc., until a 255 which would be between [245/255, 1].
-    """
-    assert total >= val, "Total was < val! Total: %d, val: %d" % (total, val)
-    return 0 if total == 0 else math.ceil(val / total * 255)
+    Will attempt to find known substrings in any block that indicate a specific language. Assumes the full CFG is all the
+    same language
 
-
-def _get_single_byte_histogram(vals, bins, ret, curr_idx):
-    """Does a full histogram thing
-    
     Args:
-        vals (Iterable[int]): the values to bin/histogram
-        bins (Iterable[int]): the bins to use. Should start with the lowest value, and have right=False.
-            EG: with bins [0, 3, 7, 9] and values [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], they would be digitized into
-            [0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3]
-        ret (np.ndarray): the values to insert into
-        curr_idx (int): the index in ret to insert into
-    
-    Returns:
-        int: the starting index in ret to continue inserting values
+        cfg (CFG): the cfg to detect language on
     """
-    binned = np.digitize(vals, bins, right=False) - 1
-    uniques, counts = np.unique(binned, return_counts=True)
-    ret[uniques + curr_idx] = [_get_single_byte_ratio(c, len(binned)) for c in counts]
-    return curr_idx + len(bins)
-
-
-def _uncompress_hist(row_idx, ret, stats, ret_idx, stats_idx, val):
-    """Uncompresses histogram values, and returns new ret_idx and stats_idx, with `val` being the value that was used
-    for the percentages (IE: self.num_blocks). Stores uncompressed values into ret (a 2-d array)"""
-    ret[row_idx, ret_idx: ret_idx + len(stats)] = np.ceil(stats * 1/255 * val)
-    return ret_idx + len(stats), stats_idx + len(stats)
+    for block in cfg.blocks:
+        for arch, matches in DETECT_ARCHITECTURE_RES.items():
+            for match in matches:
+                if any(match.fullmatch(l.lower()) for l in block.asm_lines):
+                    cfg.metadata['architecture'] = arch.value[0]
+                    return
 
 
 class InvalidInsertionMemoryAddressError(Exception):
@@ -1118,10 +661,10 @@ class InvalidInsertionMemoryAddressError(Exception):
 
 
 # NamedTuple used for conversion to networkx graph
-_NetXTuple = namedtuple('CFGFunctionDataTuple', 'name is_extern_func blocks')
+_NetXTuple = namedtuple('CFGFunctionDataTuple', 'name is_extern_func blocks metadata')
 
         
-_CFG_BUILD_CODE_STR = """
+_CFG_BUILD_CODE_STR: 'str' = """
 ##################
 # AUTO-GENERATED #
 ##################

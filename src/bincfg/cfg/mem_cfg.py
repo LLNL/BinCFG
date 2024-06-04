@@ -5,7 +5,6 @@ from enum import Enum
 from ..normalization import normalize_cfg_data, Architectures
 from .cfg import CFG
 from ..utils import get_smallest_np_dtype, scatter_nd_numpy, hash_obj, eq_obj, get_module, AtomicTokenDict
-from ..labeling import NODE_LABELS
 
 
 # Global constants for edge connection value types

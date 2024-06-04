@@ -6,6 +6,7 @@ import re
 import bincfg
 from ..utils import eq_obj
 from enum import Enum
+from ..utils.type_utils import *
 
 
 # Different edge types. Used when parsing a graphviz dot file
@@ -26,7 +27,7 @@ class EdgeType(Enum):
     """
 
 
-def get_edge_type(edge_type):
+def get_edge_type(edge_type: 'Union[EdgeType, str]') -> EdgeType:
     """Returns the edge type (instance of EdgeTypes enum class)
 
     Args:
@@ -68,42 +69,43 @@ class CFGEdge:
             - 'function_call': a ``EdgeTypes.FUNCTION_CALL`` edge
     """
 
-    from_block = None
-    """the 'from' ``CFGBasicBlock`` object"""
+    from_block: 'bincfg.CFGBasicBlock'
+    """The from block of this directed edge"""
+    to_block: 'bincfg.CFGBasicBlock'
+    """The to block of this directed edge"""
+    edge_type: 'EdgeType'
+    """The type of this edge"""
 
-    to_block = None
-    """the 'to' ``CFGBasicBlock`` object"""
-
-    edge_type = None
-    """the edge type"""
-
-    def __init__(self, from_block, to_block, edge_type):
+    def __init__(self, from_block: 'bincfg.CFGBasicBlock', to_block: 'bincfg.CFGBasicBlock', edge_type: 'Union[EdgeType, str]'):
         if not isinstance(from_block, bincfg.CFGBasicBlock) or not isinstance(to_block, bincfg.CFGBasicBlock):
             raise TypeError("Both `from_block` and `to_block` inputs must be CFGBasicBlock's. Got: %s and %s"
                 % (repr(type(from_block).__name__), repr(type(to_block).__name__)))
-
-        object.__setattr__(self, 'from_block', from_block)
-        object.__setattr__(self, 'to_block', to_block)
-        object.__setattr__(self, 'edge_type', get_edge_type(edge_type))
+        
+        self.from_block = from_block
+        self.to_block = to_block
+        self.edge_type = get_edge_type(edge_type)
+        self._initialized: bool = True
     
-    def __setattr__(self, *args):
-        raise TypeError("Cannot set attributes on immutable CFGEdge!")
+    def __setattr__(self, name: str, value: Any) -> None:
+        if hasattr(self, '_initialized') and self._initialized:
+            raise TypeError("Cannot re-initialize immutable CFGEdge!")
+        object.__setattr__(self, name, value)
 
-    def __delattr__(self, *args):
+    def __delattr__(self, name: str) -> 'NoReturn':
         raise TypeError("Cannot delete attributes on immutable CFGEdge!")
     
     @property
-    def is_normal_edge(self):
+    def is_normal_edge(self) -> 'bool':
         """True if this is a 'normal' edge type, False otherwise"""
         return self.edge_type is EdgeType.NORMAL
 
     @property
-    def is_function_call_edge(self):
+    def is_function_call_edge(self) -> 'bool':
         """True if this is a 'function_call' edge type, False otherwise"""
         return self.edge_type is EdgeType.FUNCTION_CALL
     
     @property
-    def is_branch(self):
+    def is_branch(self) -> bool:
         """True if this edge is one of a branching instruction, False otherwise
         
         Specifically, returns True if this edge's `from_block` has exactly two outgoing edges, both of which are 'normal'
@@ -112,20 +114,19 @@ class CFGEdge:
         """
         return len(self.from_block.edges_out) == 2 and all(e.edge_type is EdgeType.NORMAL for e in self.from_block.edges_out)
     
-    def __str__(self):
+    def __str__(self) -> str:
         from_addr = ('0x%08x' % self.from_block.address if self.from_block.address is not None else 'NO_ADDRESS')
         to_addr = ('0x%08x' % self.to_block.address if self.to_block.address is not None else 'NO_ADDRESS')
         return "CFGEdge of type 'EdgeType.%s' from basic block at address %s to basic block at address %s" % \
             (self.edge_type.name, from_addr, to_addr)
     
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.__str__()
     
-    def __eq__(self, other):
-        """Equality for edges. Checks the to/from basic block addresses, and edge type
-        """
+    def __eq__(self, other: Any) -> bool:
+        """Equality for edges. Checks the to/from basic block addresses, and edge type"""
         return isinstance(other, CFGEdge) and eq_obj(self, other, selector='.from_block.address') \
             and eq_obj(self, other, '.to_block.address') and eq_obj(self, other, selector='edge_type')
     
-    def __hash__(self):
+    def __hash__(self) -> int:
         return bincfg.hash_obj([self.from_block.address, self.to_block.address, self.edge_type.name], return_int=True)
