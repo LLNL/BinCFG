@@ -228,14 +228,14 @@ class BaseNormalizer(metaclass=MetaNorm):
                   
                   If not present, this value will first be tokenized/normalized by this normalizer and that
                   value + token type will be inserted. Should that fail, then the value will be inserted as a string
-                  literal WITHOUT processing it as a string literal token. 
+                  literal WITHOUT processing it as a string literal token (and, it won't have quotes on it). 
                   
                   If the 'insert_type' key is present, then it can be one of two values:
 
                     * String token_type: the value will be handled as if it is of this token type, no matter what the
                       value actually is, then it will be inserted (assuming that token handler did not return None)
                     * False (the JSON object, not the string): the value will be immediately inserted as a string literal
-                      WITHOUT processing it as a string literal token
+                      WITHOUT processing it as a string literal token (and, it won't have quotes on it)
                 
                 - 'insert_type': Determines the token type for an 'insert' key value. Ignored if the 'insert' key is not
                   present. See the 'insert' key for more info
@@ -250,6 +250,9 @@ class BaseNormalizer(metaclass=MetaNorm):
            value will first be handled by the appropriate handler for Token.STRING_LITERAL token types.
     
     The disassembler tokens themselves are always ignored by default.
+
+    NOTE: escapes will be treated normally within all strings. EG: '\\n' will be considered the newline character, but
+    '\\\\n' will escape the escape and produce the string '\\n'. 
     
     NOTE: immediates and string literals must match those found in ``bincfg.normalization.norm_utils`` (`RE_IMMEDIATE`
     and `RE_STRING_LITERAL`). The disassembler info does not take into account the regex's used to parse immediates
@@ -597,6 +600,8 @@ class BaseNormalizer(metaclass=MetaNorm):
         disinfo = state.token[len(DISINFO_START):-len(DISINFO_END)]
 
         # Functions for inserting immediate values and string literals
+        def norm_str(val):
+            return '"' + val[1:-1] + '"'
         def _insert_imm(val):
             idx = scan_for_token(state.line, type=[Tokens.IMMEDIATE], stop_unmatched=True, ignore_type=[Tokens.SPACING], start=-1, increment=-1)
             if idx is not None:
@@ -613,7 +618,7 @@ class BaseNormalizer(metaclass=MetaNorm):
             if isinstance(parsed_json, int):
                 _insert_imm(parsed_json)
             elif isinstance(parsed_json, str):
-                _insert_str('"' + parsed_json + '"')  # JSON can only handle double quotes
+                _insert_str(norm_str(repr(parsed_json)))  # JSON can only handle double quotes
             
             # If this is a dictionary with special keys, handle those
             elif isinstance(parsed_json, dict):
@@ -621,19 +626,25 @@ class BaseNormalizer(metaclass=MetaNorm):
                 if 'immediate' in parsed_json:
                     _insert_imm(parsed_json['immediate'])
                 elif 'insert' in parsed_json:
-                    ins_str = parsed_json['insert'] if isinstance(parsed_json['insert'], str) else repr(parsed_json['insert'])
+                    json_insert = parsed_json['insert']
 
                     if 'insert_type' in parsed_json:
                         if isinstance(parsed_json['insert_type'], bool) and not parsed_json['insert_type']:
-                            insert = (Tokens.STRING_LITERAL, ins_str, ins_str)
+                            # Leave as-is if a string, otherwise convert to string with repr()
+                            ins_str = json_insert if isinstance(json_insert, str) else repr(json_insert)
+                            insert = (Tokens.STRING_LITERAL, json_insert, json_insert)
                         else:
+                            # Insert string quotes if this is a string literal type, otherwise call repr() to convert to string
+                            ins_str = norm_str(repr(json_insert)) if parsed_json['insert_type'] in [Tokens.STRING_LITERAL] else repr(json_insert)
                             insert = self._handle_token(state.copy_set(token=ins_str, token_type=parsed_json['insert_type'], old_token=ins_str))
                     else:
+                        # Leave as-is if a string, otherwise convert to string with repr()
+                        ins_str = json_insert if isinstance(json_insert, str) else repr(json_insert)
                         try:
                             tokens = self.tokenize(ins_str, newline_tup=None, match_instruction_address=False, **state['kwargs'])
                             if len(tokens) != 1:
                                 raise ValueError
-                            insert = tokens[0] + (ins_str,)
+                            insert = self._handle_token(state.copy_set(token=tokens[0][1], token_type=tokens[0][0], old_token=ins_str))
                         except:
                             insert = (Tokens.STRING_LITERAL, ins_str, ins_str)
                     
@@ -649,19 +660,20 @@ class BaseNormalizer(metaclass=MetaNorm):
             # Finally, check for a string literal
             mo = RE_DISINFO_STR.fullmatch(disinfo)
             if mo is not None:
-                _insert_str(mo.groups()[0])
+                _insert_str(norm_str(mo.groups()[0]))
             
         return None
     
     def handle_string_literal(self, state):
-        """Handles string literals. Defaults to returning the original token
+        """Handles string literals. Defaults to returning the original token as a double-quoted string
 
         Should return either the token to add to the current line, or None to not add any token
 
         Args:
             state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
         """
-        return state.token
+        return ('"' + state.token.replace('"', "\\\"")[1:-1] + '"') if state.token.startswith("'") and state.token.endswith("'") \
+            else ('"' + state.token + '"') if not state.token.startswith('"') else state.token
 
     def handle_mismatch(self, state):
         """What to do when the normalizaion method finds a token mismatch (in case they were ignored in the tokenizer)

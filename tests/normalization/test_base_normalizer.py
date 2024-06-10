@@ -154,8 +154,10 @@ def test_builtin_tokens(n, pickled):
     """Tests basic builtin tokens"""
     n = _pickle(n, pickled)
     assert n.normalize("10: add -0xb rax []*+:  \t'str'<remove>") == [
-        "add -11 rax [ ] * + : 'str'"
+        "add -11 rax [ ] * + : \"str\""
     ]
+
+    assert n.normalize("test \"string\\\"\" and 'strings\"'") == ["test \"string\\\"\" and \"strings\\\"\""]
 
 
 @pytest.mark.parametrize('pickled', ['normal', 'pickled'])
@@ -215,7 +217,7 @@ def test_disassembler_info(n, pickled):
     assert n.normalize("1234: add rax, 10<-0b11><-4>") == ['add rax -4']
 
     # Strings are inserted correctly
-    assert n.normalize("1234: add rax, 10<'aa'>") == ['add rax 10 \'aa\'']
+    assert n.normalize("1234: add rax, 10<'aa'>") == ['add rax 10 \"aa\"']
     assert n.normalize("1234: add rax, 10<\"aa\">") == ['add rax 10 \"aa\"']
     assert n.normalize("1234: add rax, 10<\"aa\" asdfuiasdnj>") == ['add rax 10 \"aa\"']
     assert n.normalize("1234: add rax, 10<\"aa\"12>") == ['add rax 10 \"aa\"']
@@ -231,6 +233,7 @@ def test_disassembler_info(n, pickled):
     assert n.normalize("1234: add rax, 10<{\"insert\": 17, \"insert_type\": \"disassembler_info\"}>") == ['add rax 10']
     assert n.normalize("1234: add rax, 10<{\"insert\": \"17\", \"insert_type\": \"branch_prediction\"}>") == ['add rax 10 bp']
     assert n.normalize("1234: add rax, 10<{\"insert\": \"17\", \"insert_type\": false}>") == ['add rax 10 17']
+    assert n.normalize("1234: add rax, 10<{\"insert\": \"&&&\"}>") == ['add rax 10 &&&']
 
 
 def _test_hash(string):
@@ -242,8 +245,8 @@ def test_anonymize_tokens(n, pickled):
     """Tests the anonymize tokens does hashing right"""
     n = FakeNormalizer(FakeTokenizer(), anonymize_tokens=True)
 
-    assert n.normalize("1234: add rax, 10<'aa'>") == [_test_hash('add rax 10 \'aa\'')]
-    assert n.normalize("10: add -0xb rax []*+:  \t'str'<remove>") == [_test_hash("add -11 rax [ ] * + : 'str'")]
+    assert n.normalize("1234: add rax, 10<'aa'>") == [_test_hash('add rax 10 "aa"')]
+    assert n.normalize("10: add -0xb rax []*+:  \t'str'<remove>") == [_test_hash("add -11 rax [ ] * + : \"str\"")], FakeNormalizer(FakeTokenizer(), anonymize_tokens=False).normalize("10: add -0xb rax []*+:  \t'str'<remove>")
     assert n.normalize("1234 add 0b1010", match_instruction_address=False, kwargs_test="value") == [_test_hash('1234 value 10')]
 
     tokenizer = FakeTokenizer(tokens=[('fake', r'\(\)')] + FakeTokenizer.DEFAULT_TOKENS)

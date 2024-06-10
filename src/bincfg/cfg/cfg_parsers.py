@@ -110,6 +110,10 @@ def parse_cfg_data(cfg, data):
         bincfg.CFG.from_networkx(data, cfg)
         return
     
+    # Check for a smda report object from a disassembled file
+    elif get_module('smda', raise_err=False) and isinstance(data, (sys.modules['smda'].common.SmdaReport.SmdaReport)):
+        return parse_smda(data, cfg)
+    
     # Check for a dictionary to read in
     elif isinstance(data, dict):
         bincfg.CFG.from_cfg_dict(data, cfg)

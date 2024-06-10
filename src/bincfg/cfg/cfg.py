@@ -23,13 +23,14 @@ class CFG:
     
     Parameters
     ----------
-    data: `Optional[Union[str, TextIO, Sequence[str]]]`
+    data: `Optional[Union[str, TextIO, Sequence[str], SmdaReport]]`
         the data to use to make this CFG. Data type will be inferred based on the data passed:
 
             * string: either string with newline characters that will be split on all newlines and as a known disassembler
               format, or a string with no newline characters that will be treated as a filename.
             * Sequence of string: will be treated as already-read-in disassembler file split on newlines
             * open file object: will be read in using `.readlines`, then treated as disassembler input
+            * SmdaReport: output from smda disassembly
 
     normalizer: `Optional[Union[str, NormalizerType]]`
         the normalizer to use to force-renormalize the incoming CFG, or None to not normalize
@@ -53,7 +54,7 @@ class CFG:
     blocks_dict: 'dict[int, CFGBasicBlock]'
     """Dictionary mapping integer basic block addresses to their ``CFGBasicBlock`` objects"""
 
-    def __init__(self, data: 'Optional[Union[str, TextIO, Sequence[str]]]' = None, normalizer: 'Optional[Union[str, NormalizerType]]' = None, 
+    def __init__(self, data: 'CFGInputDataType' = None, normalizer: 'Optional[Union[str, NormalizerType]]' = None, 
                  metadata: 'Optional[dict]' = None, using_tokens: 'Optional[TokenDictType]' = None):
         # These store functions/blocks while allowing for O(1) lookup by address
         self.functions_dict: 'dict[int, CFGFunction]' = {}

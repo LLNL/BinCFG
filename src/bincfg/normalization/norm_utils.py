@@ -59,7 +59,7 @@ RE_CLOSE_BRACKET = r'\]'
 RE_COLON = r':'
 
 # Spacing and newline characters
-RE_SPACING = r'[, \t]+'
+RE_SPACING = r'[, \t.]+'
 RE_NEWLINE = r'[|\n]'
 
 # Extra information given by disassemblers

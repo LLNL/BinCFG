@@ -316,7 +316,7 @@ def test_strings_star_args(tokenizer, pickled):
     strings = [
         'add rax, rax',
         'hey rose <information> "string"',
-        'an + lot   **of: : weird -1234 symbols',
+        'an + lot  .. **of: : weird -1234 symbols',
         'multiple \n new rax ebx lines|12343 together',
     ]
     
@@ -332,7 +332,7 @@ def test_strings_star_args(tokenizer, pickled):
         tokenizer.DEFAULT_NEWLINE_TUPLE, 
         
         (Tokens.OPCODE, 'an'), (Tokens.SPACING, ' '), (Tokens.PLUS_SIGN, '+'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'lot'), 
-        (Tokens.SPACING, '   '), (Tokens.TIMES_SIGN, '*'), (Tokens.TIMES_SIGN, '*'), (Tokens.OPCODE, 'of'), (Tokens.COLON, ':'), 
+        (Tokens.SPACING, '  .. '), (Tokens.TIMES_SIGN, '*'), (Tokens.TIMES_SIGN, '*'), (Tokens.OPCODE, 'of'), (Tokens.COLON, ':'), 
         (Tokens.SPACING, ' '), (Tokens.COLON, ':'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'weird'), (Tokens.SPACING, ' '), 
         (Tokens.IMMEDIATE, '-1234'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'symbols'), tokenizer.DEFAULT_NEWLINE_TUPLE, 
         

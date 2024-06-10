@@ -11,6 +11,11 @@ try:
     import networkx
 except ImportError:
     pass
+try:
+    from smda.common.SmdaReport import SmdaReport
+    CFGInputDataType = Optional[Union[str, TextIO, Sequence[str], SmdaReport]]
+except ImportError:
+    pass
 
 PlainAddress = Union[int, str]
 """Types that can be converted into an address by themselves, without having to look at any attributes"""
@@ -25,9 +30,10 @@ AddressLike = Union[PlainAddress, Addressable]
 
 class NormalizerType(Protocol):
     """Object that has a valid `.normalize()` function"""
-    def normalize(self, *strings: str, cfg: 'Optional[bincfg.CFG]', 
+    def normalize(self, *strings: 'str', cfg: 'Optional[bincfg.CFG]', 
                   block: 'Optional[bincfg.CFGBasicBlock]', newline_tup: 'Union[None, Tuple[str, str], object]', 
                   match_instruction_address: 'bool', **kwargs: Any) -> 'list[str]': ...
 
 
 TokenDictType = Union[dict[str, int], AtomicTokenDict]
+

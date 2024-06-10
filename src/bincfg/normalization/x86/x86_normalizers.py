@@ -6,9 +6,9 @@ decompiled binaries instead of compiled assembly and thus lose out on some infor
 for jump instructions)
 """
 from ..base_normalizer import TokenizationLevel, BaseNormalizer, LIBC_FUNCTION_NAMES
-from .x86_tokenizer import X86_DEFAULT_TOKENIZER
+from .x86_tokenizer import X86_DEFAULT_TOKENIZER, X86_RE_SEGMENT_REG
 from .x86_norm_funcs import *
-from ..norm_utils import SPLIT_IMMEDIATE_TOKEN
+from ..norm_utils import SPLIT_IMMEDIATE_TOKEN, scan_for_token
 from ..norm_funcs import *
 from ...utils import eq_obj, hash_obj
 
@@ -78,6 +78,7 @@ class X86BaseNormalizer(BaseNormalizer):
     
     def handle_all_symbols(self, state):
         """Handles all symbols. We use this to keep track of when memory expressions start/end"""
+        # Check for memory address brackets
         if state.token_type in [Tokens.OPEN_BRACKET]:
             state.set(memory_start=len(state.line))
         elif state.token_type in [Tokens.CLOSE_BRACKET]:
@@ -85,6 +86,11 @@ class X86BaseNormalizer(BaseNormalizer):
             self.handle_memory_expression(state)
             state.set(memory_start=None)
             return None  # Don't append the token since we've already done that
+
+        # Check for segment addresses before memory expressions
+        elif state.token_type in [Tokens.COLON]:
+            #if scan_for_token(state.line, type=Tokens.REGISTER, token=X86_RE_SEGMENT_REG, ignore_type=[Tokens.SPACING], stop_unmatched=True, match_re=True, start=-1, increment=-1, )
+            pass
         
         return state.token
     
@@ -119,7 +125,7 @@ class X86BaseNormalizer(BaseNormalizer):
         handled)
 
         Args:
-            state (NormalizerState): dictionary of current state information. See bincfg.normalization.base_normalizer.NormalizerState
+            state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
         """
         found_base, found_mult, found_scale = False, False, False
         for i, (token_type, new_token, old_token) in enumerate(state.line[state.memory_start:]):
