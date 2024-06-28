@@ -6,8 +6,9 @@ from ..utils import eq_obj, hash_obj, get_address
 from ..utils.type_utils import *
 
 
-CFGFunctionPickledState = Tuple[int, str, Tuple[CFGBasicBlock, ...], bool]
-"""The pickled state of a function"""
+if IN_PYTHON_TYPING_VERSION:
+    CFGFunctionPickledState = Tuple[int, str, Tuple[CFGBasicBlock, ...], bool]
+    """The pickled state of a function"""
 
 
 class CFGFunction:
@@ -29,7 +30,7 @@ class CFGFunction:
     blocks: `Optional[Iterable[CFGBasicBlock]]`
         if None, will be initialized to an empty list, otherwise an iterable of ``CFGBasicBlock`` objects that are within 
         this function
-    is_extern_func: `bool`
+    is_extern_function: `bool`
         if True, then this function is an external function (a dynamically loaded function)
     metadata: `Optional[dict]`
         optional dictionary of metadata to associate with this function
@@ -51,13 +52,13 @@ class CFGFunction:
     """Dictionary of metadata associated with this function"""
 
     def __init__(self, parent_cfg: 'Optional[bincfg.CFG]' = None, address: 'Optional[AddressLike]' = None, name: 'Optional[str]' = None, 
-                 blocks: 'Optional[Iterable[CFGBasicBlock]]' = None, is_extern_func: bool = False, metadata: 'Optional[dict]' = None):
+                 blocks: 'Optional[Iterable[CFGBasicBlock]]' = None, is_extern_function: bool = False, metadata: 'Optional[dict]' = None):
         self.parent_cfg = parent_cfg
         self.address = -1 if address is None else get_address(address)
         self.name = name if name is not None and name != '' else ("__UNNAMED_FUNC_%d" % self.address)
         self.blocks = [] if blocks is None else list(blocks)
         self.metadata = {} if metadata is None else metadata
-        self._is_extern_function: bool = is_extern_func
+        self._is_extern_function: bool = is_extern_function
     
     @property
     def num_blocks(self) -> 'int':

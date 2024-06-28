@@ -184,6 +184,7 @@ class CFG:
             * adding missing edges to their associated edges_out and edges_in
             * converting edges from (None/address, None/address, edge_type) tuples into CFGEdge() objects
             * adding from_block and to_block in new edges if missing
+            * functions with no address will have their address be that of the smallest addressed block in their blocks, if present
 
         Args:
             function (CFGFunction): arbitrary number of CFGFunction's to add
@@ -192,11 +193,15 @@ class CFG:
                 will be overriden (which has unsupported behavior). Defaults to False.
         """
         for func in functions:
+            # Check that the function has an address
+            if func.address == -1 and len(func.blocks) > 0:
+                func.address = min(b.address for b in func.blocks)
+
             # Check for bad function type, address being None, or function address already existing
             if not isinstance(func, CFGFunction):
                 raise TypeError("Can only add function of type CFGFunction, not '%s'" % type(func).__name__)
-            if func.address is None:
-                raise ValueError("Function cannot have a None address when adding to CFG: %s" % func)
+            if func.address == -1:
+                raise ValueError("Functions must have valid address when adding to CFG: %s" % func)
             if func.address in self.functions_dict:
                 if not override:
                     raise ValueError("Function has address 0x%x which already exists in this CFG!" % func.address)
@@ -471,10 +476,10 @@ class CFG:
             - 'normalizer': string name of normalizer, or None if it had none
             - 'metadata': a dictionary of metadata
             - 'functions': a dictionary mapping integer function addresses to named tuples containing its data with the
-               structure ('name': `Union[str, None]`, 'is_extern_func': `bool`, 'blocks': `Tuple[int, ...]`, 'metadata': `dict`).
+               structure ('name': `Union[str, None]`, 'is_extern_function': `bool`, 'blocks': `Tuple[int, ...]`, 'metadata': `dict`).
 
                 * The 'name' element (first element) is a string name of the function, or None if it doesn't have a name
-                * The 'is_extern_func' element (second element) is True if this function is an extern function, False otherwise.
+                * The 'is_extern_function' element (second element) is True if this function is an extern function, False otherwise.
                   An extern function is one that is located in an external library intended to be found at runtime, and
                   that doesn't have its code here in the CFG, only a small function meant to jump to the external function
                   when loaded at runtime
@@ -523,15 +528,22 @@ class CFG:
         return ret
     
     @classmethod
-    def from_networkx(cls, graph: 'networkx.MultiDiGraph') -> 'CFG':
+    def from_networkx(cls, graph: 'networkx.MultiDiGraph', cfg: 'Optional[CFG]'=None) -> 'CFG':
         """Converts a networkx graph to a CFG
 
         Expects the graph to have the exact same structure as is shown in CFG().to_networkx()
+
+        Args:
+            graph (networkx.MultiDiGraph): the networkx graph
+            cfg (Optional[CFG]): can be None to create/return a new CFG object, or an already
+                created and empty CFG() object to put data into that one
         """
-        ret = CFG(normalizer=graph.graph['normalizer'], metadata=graph.graph['metadata'])
+        ret = CFG() if cfg is None else cfg
+        ret.normalizer = graph.graph['normalizer']
+        ret.metadata = {} if graph.graph['metadata'] is None else graph.graph['metadata']
 
         ret.add_function(*[
-            CFGFunction(address=addr, name=name, is_extern_func=ef, metadata=meta, blocks=[
+            CFGFunction(address=addr, name=name, is_extern_function=ef, metadata=meta, blocks=[
                 CFGBasicBlock(
                     address=block_addr,
                     edges_out=[(None, a, et) for _, a, et in graph.edges(block_addr, keys=True)],
@@ -604,7 +616,7 @@ class CFG:
         Returns:
             str: string of python code to build the cfg
         """
-        all_functions = "\n    ".join([("%d: CFGFunction(parent_cfg=__auto_cfg, address=%d, name=%s, is_extern_func=%s, metadata=%s)," % 
+        all_functions = "\n    ".join([("%d: CFGFunction(parent_cfg=__auto_cfg, address=%d, name=%s, is_extern_function=%s, metadata=%s)," % 
             (f.address, f.address, repr(f.name), f.is_extern_function, repr(f.metadata))) for f in self.functions])
         
         all_blocks = "\n    ".join([("%s: CFGBasicBlock(parent_function=__auto_functions[%d], address=%d, asm_memory_addresses=%s, metadata=%s, asm_lines=[\n        %s\n    ])," % 
@@ -662,7 +674,7 @@ class InvalidInsertionMemoryAddressError(Exception):
 
 
 # NamedTuple used for conversion to networkx graph
-_NetXTuple = namedtuple('CFGFunctionDataTuple', 'name is_extern_func blocks metadata')
+_NetXTuple = namedtuple('CFGFunctionDataTuple', 'name is_extern_function blocks metadata')
 
         
 _CFG_BUILD_CODE_STR: 'str' = """

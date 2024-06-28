@@ -1,4 +1,4 @@
-bincfg
+src
 ===
 
 .. toctree::

@@ -1,8 +1,9 @@
 from .base_tokenizer import Tokens
 from .base_normalizer import DEFAULT_IMMEDIATE_THRESHOLD
-from .norm_utils import imm_to_int, DISPLACEMENT_IMMEDIATE_STR, IMMEDIATE_VALUE_STR, STRING_LITERAL_STR, JUMP_DESTINATION_STR, \
-    MEMORY_EXPRESSION_STR, FUNCTION_CALL_STR, MULTI_FUNCTION_CALL_STR, RECURSIVE_FUNCTION_CALL_STR, EXTERNAL_FUNCTION_CALL_STR, \
-    INTERNAL_FUNCTION_CALL_STR
+from .norm_utils import imm_to_int, scan_for_token, DISPLACEMENT_IMMEDIATE_STR, IMMEDIATE_VALUE_STR, STRING_LITERAL_STR, \
+    JUMP_DESTINATION_STR, MEMORY_EXPRESSION_STR, FUNCTION_CALL_STR, MULTI_FUNCTION_CALL_STR, RECURSIVE_FUNCTION_CALL_STR, \
+    EXTERNAL_FUNCTION_CALL_STR, INTERNAL_FUNCTION_CALL_STR
+from ..cfg.cfg_edge import EdgeType
 import bincfg
 
 
@@ -50,11 +51,11 @@ def replace_immediate(*args, include_negative=False):
     return _ret_imm if len(args) == 0 else _ret_imm(*args)
 
 
-def replace_string_literal(*args):
+def replace_string_literal(*args, replace_previous_immediate=False):
     """Builds a function that replaces string literal values with the string 'str'
     
     This will return a function to be called as a part of a normalizer. This function takes no arguments and only 1 keyword 
-    argument: whether or not to include a negative sign '-' in front of the immediate string when the input is negative.
+    argument: whether to replace the previous immediate, or keep it and add in a 'str' string
 
     NOTE: This is meant to be a higher-order function. But, just in case the user forgets that (or is too lazy to add in
     two extra characters to call this function), if you pass multiple args then it will be assumed this is being called 
@@ -62,13 +63,26 @@ def replace_string_literal(*args):
 
     Args:
         args: args for this function. Ideally empty
+        replace_previous_immediate (bool): if True, then any previous immediate value will be replaced with the 'str'
+            string, otherwise the 'str' string will just be added
 
     Returns:
         Union[Callable[..., str], str]: either a function that will handle immediate strings (if this function was 
             called correctly), or a handled immediate string
     """
     def _ret_string_imm(self, state):
-        return STRING_LITERAL_STR
+        # If we are not replacing any previous immediate, just return now
+        if not replace_previous_immediate:
+            return STRING_LITERAL_STR
+        
+        # Scan for a previous immediate token, and if not present, just return the string now
+        idx = scan_for_token(state.line, type=Tokens.IMMEDIATE, ignore_type=[Tokens.SPACING], stop_unmatched=True, start=-1, increment=-1)
+        if idx is None:
+            return STRING_LITERAL_STR
+        
+        # We have a previous immediate value, replace it with our string, and return None to not insert token
+        state.line = state.line[:idx] + [(Tokens.STRING_LITERAL, STRING_LITERAL_STR, state.orig_token)]
+        return None
     return _ret_string_imm if len(args) == 0 else _ret_string_imm(*args)
 
 
@@ -90,6 +104,10 @@ def threshold_immediate(threshold=DEFAULT_IMMEDIATE_THRESHOLD, include_negative=
         raise TypeError('Threshold must be int, instead got `%s`: %s' % (type(threshold).__name__, threshold))
 
     def _threshold(self, state):
+        # If we have the same value as the imm_str, then assume we've already been normalized
+        if state.token == IMMEDIATE_VALUE_STR:
+            return IMMEDIATE_VALUE_STR
+        
         val = imm_to_int(state.token)
         return str(val) if abs(val) <= threshold else ('-' + imm_str) if val < 0 and include_negative else imm_str
 
@@ -221,7 +239,7 @@ def special_function_call(self, state, ret_only_call_type=False):
         func_call_block_inds, edge_types = cfg.get_block_edges_out(block, ret_edge_types=True)
 
         # Make sure the first value is in fact a function call
-        if len(edge_types) > 0 and edge_types[0] == bincfg.FUNCTION_CALL_EDGE_CONN_VALUE:
+        if len(edge_types) > 0 and edge_types[0] == EdgeType.FUNCTION_CALL.value:
 
             # Check for a self call by comparing the two block's function indices
             func_call_block_idx = func_call_block_inds[0]
@@ -229,7 +247,7 @@ def special_function_call(self, state, ret_only_call_type=False):
             extern_func_name = cfg.get_block_function_name(func_call_block_idx) if cfg.is_block_extern_function(func_call_block_idx) else None
 
             # Check for a multi-function call
-            multi_call = len(edge_types[edge_types == bincfg.FUNCTION_CALL_EDGE_CONN_VALUE]) > 1
+            multi_call = len(edge_types[edge_types == EdgeType.FUNCTION_CALL.value]) > 1
         
         # Otherwise, we have no clue where the function call goes to, treat it as just some innerfunc
         else:

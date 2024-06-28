@@ -6,8 +6,9 @@ from ..utils import get_address, eq_obj, hash_obj
 from ..utils.type_utils import *
 
 
-CFGBasicBlockPickledState = Tuple[int, Tuple[Tuple[int, int, EdgeType], ...], Tuple[Tuple[int, int, EdgeType], ...], list[str], list[int], dict]
-"""The pickled state of a CFGBasicBlock"""
+if IN_PYTHON_TYPING_VERSION:
+    CFGBasicBlockPickledState = Tuple[int, Tuple[Tuple[int, int, EdgeType], ...], Tuple[Tuple[int, int, EdgeType], ...], list[str], list[int], dict]
+    """The pickled state of a CFGBasicBlock"""
 
 
 class CFGBasicBlock:
@@ -59,7 +60,9 @@ class CFGBasicBlock:
                  asm_lines: 'Optional[Iterable[str]]' = None, asm_memory_addresses: 'Optional[Iterable[AddressLike]]' = None, 
                  metadata: 'Optional[dict]' = None):
         # Get the memory addresses all figured out
-        self.asm_memory_addresses: 'list[int]' = [] if asm_memory_addresses is None else [get_address(addr) for addr in asm_memory_addresses]
+        self.asm_memory_addresses = [] if asm_memory_addresses is None else [get_address(addr) for addr in asm_memory_addresses]
+        self.asm_memory_addresses: 'list[int]' = [] if all(a < 0 for a in self.asm_memory_addresses) else self.asm_memory_addresses
+
         if address is None and len(self.asm_memory_addresses) > 0:
             self.address = self.asm_memory_addresses[0]
         else:
@@ -260,7 +263,7 @@ class CFGBasicBlock:
         else:
             return [self._get_directions(v)[0] for v in direction]
         
-    def __str__(self) -> str:
+    def __str__(self) -> 'str':
         valid_pf = isinstance(self.parent_function, bincfg.CFGFunction)
         asm = '\n'.join([("\t0x%s: %s" % ('%08x' % addr, line)) for addr, line in zip(self.asm_memory_addresses, self.asm_lines)]) \
             if len(self.asm_memory_addresses) > 0 else '\n'.join([("\t%s" % line) for line in self.asm_lines])
@@ -274,14 +277,14 @@ class CFGBasicBlock:
         
         return (ret + "Metadata: %s" % self.metadata) if len(self.metadata) > 0 else ret
     
-    def __repr__(self) -> str:
+    def __repr__(self) -> 'str':
         return str(self)
     
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: 'Any') -> 'bool':
         return isinstance(other, CFGBasicBlock) and all(eq_obj(self, other, selector=s) for s in \
             ['address', 'edges_in', 'edges_out', 'metadata', 'asm_memory_addresses', 'asm_lines'])
     
-    def __hash__(self) -> int:
+    def __hash__(self) -> 'int':
         return hash_obj([self.address, self.edges_in, self.edges_out, self.metadata, self.asm_lines, self.asm_memory_addresses], return_int=True)
     
     def __getstate__(self) -> 'CFGBasicBlockPickledState':
@@ -289,7 +292,7 @@ class CFGBasicBlock:
         warnings.warn("Attempting to pickle a singleton basic block object! This will mess up edges unless you know what you're doing!")
         return self._get_pickle_state()
     
-    def __setstate__(self, state: 'CFGBasicBlockPickledState') -> None:
+    def __setstate__(self, state: 'CFGBasicBlockPickledState') -> 'None':
         """Print a warning about pickling singleton basic block objects"""
         warnings.warn("Attempting to unpickle a singleton basic block object! This will mess up edges unless you know what you're doing!")
         self._set_pickle_state(state)

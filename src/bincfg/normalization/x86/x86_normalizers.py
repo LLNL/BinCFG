@@ -8,9 +8,13 @@ for jump instructions)
 from ..base_normalizer import TokenizationLevel, BaseNormalizer, LIBC_FUNCTION_NAMES
 from .x86_tokenizer import X86_DEFAULT_TOKENIZER, X86_RE_SEGMENT_REG
 from .x86_norm_funcs import *
-from ..norm_utils import SPLIT_IMMEDIATE_TOKEN, scan_for_token
+from ..norm_utils import SPLIT_IMMEDIATE_TOKEN, scan_for_token, RE_SPACING
 from ..norm_funcs import *
 from ...utils import eq_obj, hash_obj
+
+
+# Used to replace '{spacing}ptr' in a memory size expression
+REPL_SPACE_PTR = re.compile(r'{space}ptr'.format(space=RE_SPACING), flags=re.IGNORECASE)
 
 
 class X86BaseNormalizer(BaseNormalizer):
@@ -61,6 +65,10 @@ class X86BaseNormalizer(BaseNormalizer):
     """The tokenization level to use for this normalizer"""
 
     def __init__(self, tokenizer=None, token_handlers=None, token_sep=None, tokenization_level=TokenizationLevel.AUTO, anonymize_tokens=False):
+        # Add the handle_segment_address() function
+        token_handlers = {} if token_handlers is None else token_handlers
+        token_handlers.setdefault(Tokens.SEGMENT_ADDRESS, self.handle_segment_address)
+
         super().__init__(tokenizer=tokenizer if tokenizer is not None else X86_DEFAULT_TOKENIZER, token_handlers=token_handlers,
                          token_sep=token_sep if token_sep is not None else ' ',
                          tokenization_level=tokenization_level, anonymize_tokens=anonymize_tokens)
@@ -89,10 +97,34 @@ class X86BaseNormalizer(BaseNormalizer):
 
         # Check for segment addresses before memory expressions
         elif state.token_type in [Tokens.COLON]:
-            #if scan_for_token(state.line, type=Tokens.REGISTER, token=X86_RE_SEGMENT_REG, ignore_type=[Tokens.SPACING], stop_unmatched=True, match_re=True, start=-1, increment=-1, )
-            pass
+            idx = scan_for_token(state.line, type=Tokens.REGISTER, token=X86_RE_SEGMENT_REG, ignore_type=[Tokens.SPACING], 
+                                 stop_unmatched=True, match_re=True, start=-1, increment=-1)
+            if idx is not None:
+                state.line, state.token_type, state.token, state.orig_token = state.line[:idx], Tokens.SEGMENT_ADDRESS, \
+                    state.line[idx][1] + state.token, ''.join([t[2] for t in state.line[idx:]]) + state.orig_token
+                return self._handle_token(state, insert_token=False).token
         
         return state.token
+    
+    def handle_segment_address(self, state):
+        """Handles a segment address. Defaults to returning the original token
+
+        Should return either the token to add to the current line, or None to not add any token
+
+        Args:
+            state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
+        """
+        return state.token
+    
+    def handle_memory_size(self, state):
+        """Handles a memory size. Removes any '{spacing}ptr' where {spacing} is any amount of spacing
+
+        Should return either the token to add to the current line, or None to not add any token
+
+        Args:
+            state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
+        """
+        return REPL_SPACE_PTR.sub('', state.token)
     
     def handle_memory_expression(self, state):
         """Handles memory expressions. Splits values up into 'base', 'index', 'scale', and 'displacement'
@@ -129,7 +161,7 @@ class X86BaseNormalizer(BaseNormalizer):
         """
         found_base, found_mult, found_scale = False, False, False
         for i, (token_type, new_token, old_token) in enumerate(state.line[state.memory_start:]):
-            state.token_type, state.orig_token, state.token, state.token_idx = token_type, old_token, new_token, state.memory_start + i
+            state.token_type, state.orig_token, state.token, state.token_idx = token_type, old_token, old_token, state.memory_start + i
 
             # Ignore spacing and whatnot
             if token_type in [Tokens.SPACING, Tokens.DISASSEMBLER_INFO, Tokens.OPEN_BRACKET, Tokens.PLUS_SIGN]:
@@ -161,44 +193,44 @@ class X86BaseNormalizer(BaseNormalizer):
         state.memory_start = None
     
     def handle_memory_base(self, state):
-        """Handles the 'base' section of a memory addressing. Defaults to returning whatever was already processed
+        """Handles the 'base' section of a memory addressing. Defaults to returning it processed as a register
 
         Should return either the token to add to the current line, or None to not add any token
 
         Args:
             state (NormalizerState): dictionary of current state information. See bincfg.normalization.base_normalizer.NormalizerState
         """
-        return state.token
+        return self.handle_register(state)
     
     def handle_memory_index(self, state):
-        """Handles the 'index' section of a memory addressing. Defaults to returning whatever was already processed
+        """Handles the 'index' section of a memory addressing. Defaults to returning it processed as a register
 
         Should return either the token to add to the current line, or None to not add any token
 
         Args:
             state (NormalizerState): dictionary of current state information. See bincfg.normalization.base_normalizer.NormalizerState
         """
-        return state.token
+        return self.handle_register(state)
     
     def handle_memory_scale(self, state):
-        """Handles the 'scale' section of a memory addressing. Defaults to returning whatever was already processed
+        """Handles the 'scale' section of a memory addressing. Defaults to returning it processed as an immediate
 
         Should return either the token to add to the current line, or None to not add any token
 
         Args:
             state (NormalizerState): dictionary of current state information. See bincfg.normalization.base_normalizer.NormalizerState
         """
-        return state.token
+        return self.handle_immediate(state)
     
     def handle_memory_displacement(self, state):
-        """Handles the 'displacement' section of a memory addressing. Defaults to returning whatever was already processed
+        """Handles the 'displacement' section of a memory addressing. Defaults to returning it processed as an immediate
 
         Should return either the token to add to the current line, or None to not add any token
 
         Args:
             state (NormalizerState): dictionary of current state information. See bincfg.normalization.base_normalizer.NormalizerState
         """
-        return state.token
+        return self.handle_immediate(state)
 
         
 class X86InnerEyeNormalizer(X86BaseNormalizer):
@@ -214,6 +246,8 @@ class X86InnerEyeNormalizer(X86BaseNormalizer):
         * Jump destinations are 'immval'
         * Registers are left as-is 
         * Doesn't say anything about memory sizes, so they are ignored
+        * Doesn't say anything about segment addresses, so they are ignored
+        * Doesn't say anything about branch predictions, so they are ignored
         * Tokens are at the instruction-level
     
     
@@ -254,6 +288,10 @@ class X86InnerEyeNormalizer(X86BaseNormalizer):
     """"""
     handle_string_literal = replace_string_literal
     """"""
+    handle_segment_address = ignore
+    """"""
+    handle_branch_prediction = ignore
+    """"""
     opcode_function_call = replace_function_call_immediate(FUNCTION_CALL_STR)
     """"""
 
@@ -271,6 +309,8 @@ class X86DeepBinDiffNormalizer(X86BaseNormalizer):
         * Can't really tell what's supposed to be done with function calls, will just assume they should be 'call immval'
         * Jump destinations are 'immval'
         * Strings are left as-is (Kinda bad, but they are doing binary diffing and not binary similarity, so I'll let it slide)
+        * Doesn't say anything about segment addresses, so they are ignored
+        * Doesn't say anything about branch predictions, so they are ignored
         * Tokens are at the op-level
 
     
@@ -313,7 +353,7 @@ class X86DeepBinDiffNormalizer(X86BaseNormalizer):
         super().__init__(tokenizer=tokenizer, token_handlers=token_handlers, token_sep=token_sep, tokenization_level=tokenization_level, anonymize_tokens=anonymize_tokens)
         
         self._replace_strings = replace_strings
-        self.handle_string_literal = replace_string_literal if replace_strings else return_token
+        self.handle_string_literal = replace_string_literal if replace_strings else self.handle_string_literal
 
     
     handle_immediate = replace_immediate
@@ -323,6 +363,10 @@ class X86DeepBinDiffNormalizer(X86BaseNormalizer):
     handle_register = x86_replace_general_register
     """"""
     handle_memory_expression = replace_memory_expression(MEMORY_EXPRESSION_STR)
+    """"""
+    handle_segment_address = ignore
+    """"""
+    handle_branch_prediction = ignore
     """"""
     opcode_function_call = replace_function_call_immediate(IMMEDIATE_VALUE_STR)
     """"""
@@ -351,6 +395,8 @@ class X86SafeNormalizer(X86BaseNormalizer):
           of call/jump instructions) are left alone
         * Memory sizes are ignored
         * Doesn't say anything about registers, so they are left as-is
+        * Doesn't say anything about segment addresses, so they are left as-is
+        * Doesn't say anything about branch predictions, so they are ignored
         * Strings would be ignored, just using the immediate values associated with their memory address
         * Tokens are at the instruction-level
     
@@ -421,6 +467,8 @@ class X86SafeNormalizer(X86BaseNormalizer):
     """"""
     handle_string_literal = ignore
     """"""
+    handle_branch_prediction = ignore
+    """"""
 
     def __eq__(self, other):
         return super().__eq__(other) and eq_obj(self, other, '._imm_threshold')
@@ -486,6 +534,8 @@ class X86DeepSemanticNormalizer(X86BaseNormalizer):
                'immval' string, so that is taken into account as well
         
         * Tokenized at instruction-level
+        * Doesn't say anything about segment addresses, so they are left as-is
+        * Doesn't say anything about branch predictions, so they are ignored
     
     
     Parameters
@@ -538,6 +588,8 @@ class X86DeepSemanticNormalizer(X86BaseNormalizer):
     """"""
     handle_memory_scale = lambda self, state: str(imm_to_int(state.token))
     """"""
+    handle_branch_prediction = ignore
+    """"""
     opcode_function_call = special_function_call
     """"""
     opcode_jump = replace_jump_destination
@@ -561,6 +613,8 @@ class X86CompressedStatsNormalizer(X86BaseNormalizer):
         * registers are handled the same as deepsem/deepbindiff
         * memory pointers/memory expressions are handled the same as in deepsemantic
         * Tokenized at the instruction-level
+        * segment addresses are ignored
+        * branch predictions are ignored
     
     Parameters
     ----------
@@ -610,6 +664,10 @@ class X86CompressedStatsNormalizer(X86BaseNormalizer):
     handle_immediate = replace_immediate(include_negative=True)
     """"""
     handle_string_literal = replace_string_literal
+    """"""
+    handle_segment_address = ignore
+    """"""
+    handle_branch_prediction = ignore
     """"""
     opcode_function_call = special_function_call
     """"""
@@ -690,26 +748,19 @@ class X86HPCDataNormalizer(X86BaseNormalizer):
         self._replace_strings = replace_strings
         super().__init__(tokenizer=tokenizer, token_handlers=token_handlers, token_sep=token_sep, tokenization_level=tokenization_level)
 
-        self.handle_string_literal = replace_string_literal if replace_strings else super().handle_string_literal
+        self.handle_string_literal = replace_string_literal(replace_previous_immediate=True) if replace_strings else super().handle_string_literal
 
     def finalize_instruction(self, state):
         """Handles a single instruction. Calls super()'s handle_instruction, then performs the immediate splitting
         
         Args:
-            line (List[TokenTuple]): a list of (token_type, token) tuples. the current assembly line
-            cfg (Optional[Union[CFG, MemCFG]], optional): either a ``CFG`` or ``MemCFG`` object that these lines occur in. 
-                Used for determining function calls to self, internal functions, and external functions. If not passed, 
-                then these will not be used. Defaults to None.
-            block (Optional[Union[CFGBasicBlock, int]], optional): either a ``CFGBasicBlock`` or integer block_idx in a 
-                ``MemCFG`` object. Used for determining function calls to self, internal functions, and external functions. 
-                If not passed, then these will not be used. Defaults to None.
+            state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
         """
-        handled = super().finalize_instruction(state)
-        line = state.line if handled is None else handled
+        super().finalize_instruction(state)
 
         new_inst = []
         prev_split = False
-        for token_type, new_token, old_token in line:
+        for token_type, new_token, old_token in state.line:
             if token_type in [Tokens.IMMEDIATE] and (len(new_token) > self._num_digits or prev_split):
                 
                 new_inst.append((Tokens.SPLIT_IMMEDIATE, SPLIT_IMMEDIATE_TOKEN, SPLIT_IMMEDIATE_TOKEN))
@@ -727,6 +778,6 @@ class X86HPCDataNormalizer(X86BaseNormalizer):
     def __eq__(self, other):
         return super().__eq__(other) and eq_obj(self, other, selector='._num_digits') and eq_obj(self, other, selector='._replace_strings')
     
-    def __hash__(self, other):
+    def __hash__(self):
         return hash_obj([super().__hash__(), self._num_digits, self._replace_strings], return_int=True)
     

@@ -1,8 +1,6 @@
 bincfg.normalization.x86 package
 ================================
 
-Contains tokenizers/normalizers for x86 assembly.
-
 Submodules
 ----------
 

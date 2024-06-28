@@ -1,15 +1,16 @@
 import numpy as np
 import pickle
-import warnings
+import inspect
 from enum import Enum
 from ..normalization import normalize_cfg_data, Architectures
-from .cfg import CFG
+from .cfg import CFG, CFGBasicBlock, CFGFunction, EdgeType
 from ..utils import get_smallest_np_dtype, scatter_nd_numpy, hash_obj, eq_obj, get_module, AtomicTokenDict
+from ..utils.type_utils import *
 
 
-# Global constants for edge connection value types
-NORMAL_EDGE_CONN_VALUE = 1
-FUNCTION_CALL_EDGE_CONN_VALUE = 2
+if IN_PYTHON_TYPING_VERSION:
+    BlockInfoBitDtype = np.int8  # Int type being used to store block info flags
+    BlockInfoBitMaskFunctionType = Callable[[CFGBasicBlock], Literal[0, 1, True, False]]  # Dtype of functions that are used to compute bit flags
 
 
 class MemCFG:
@@ -26,6 +27,8 @@ class MemCFG:
         the normalizer to use to normalize the incoming CFG (or None if it is already normalized). If the incoming CFG 
         object has already been normalized, and `normalizer` is not None, then this will attempt to normalize the CFG 
         again with this normalizer
+    keep_memory_addresses: `bool`
+        if True, then memory addresses will also be kept. Otherwise they will be removed to save space
     inplace: `bool`
         if True and cfg needs to be normalized, it will be normalized inplace
     using_tokens: `Union[Dict[str, int], AtomicTokenDict]`
@@ -37,13 +40,13 @@ class MemCFG:
         the same normalizer.
     """
 
-    normalizer = None
+    normalizer: 'NormalizerType'
     """The normalizer used to normalize input before converting to ``MemCFG``
     
     Can be shared with a ``MemCFGDataset`` object if this ``MemCFG`` is a part of one
     """
 
-    tokens = None
+    tokens: 'dict[str, int]'
     """Dictionary mapping token strings to integer values used in this ``MemCFG``
     
     Can be shared with a ``MemCFGDataset`` object if this ``MemCFG`` is a part of one.
@@ -51,10 +54,10 @@ class MemCFG:
     Can also be an AtomicTokenDict object for atomic token updates
     """
 
-    function_name_to_idx = None
+    function_name_to_idx: 'dict[str, int]'
     """Dictionary mapping string function names to their integer ids used in this ``MemCFG``"""
 
-    asm_lines = None
+    asm_lines: 'np.ndarray'
     """Assembly line information
     
     A contiguous 1-d numpy array of shape (num_asm_lines,) of integer assembly line tokens. Dtype is the smallest 
@@ -69,7 +72,14 @@ class MemCFG:
     Also see :func:`~bincfg.MemCFG.get_block_asm_lines`
     """
 
-    block_asm_idx = None
+    asm_memory_addresses: 'Union[None, np.ndarray]'
+    """Memory addresses for all of the assembly lines
+    
+    Only saved if `keep_memory_addresses=True` when constructing the ``MemCFG``. This will be a 1-d signed integer numpy
+    array, where a value of -1 means the memory address for that corresponding line was not present in the basic block
+    """
+
+    block_asm_idx: 'np.ndarray'
     """Indices in ``asm_lines`` that correspond to the assembly lines for each basic block in this ``MemCFG``
     
     A 1-d numpy array of shape (num_blocks + 1,). Dtype is the smallest unsigned dtype needed to store the value 
@@ -77,7 +87,7 @@ class MemCFG:
     index of `block_asm_idx[i + 1]` in ``asm_lines``.
     """
 
-    block_func_idx = None
+    block_func_idx: 'np.ndarray'
     """Integer ids for the function that each basic block belongs to
     
     A 1-d numpy array of shape (num_blocks,) where each element is a function id for the block at that index. The id
@@ -86,7 +96,7 @@ class MemCFG:
     Also see :func:`~bincfg.MemCFG.get_block_function_idx` and :func:`~bincfg.MemCFG.get_block_function_name`
     """
 
-    block_flags = None
+    block_flags: 'np.ndarray'
     """Integer of bit flags for each basic block
     
     A 1-d numpy array of shape (num_blocks,) where each element is an integer of bit flags. See ``BlockInfoBitMask``
@@ -95,20 +105,44 @@ class MemCFG:
     Also see :func:`~bincfg.MemCFG.get_block_flags`
     """
 
-    block_labels = None
-    """Dictionary mapping block indices to integer block label bit flags
-    
-    Only blocks that have known labels will be in this dictionary. The bit flags integer will have the bit set for each
-    index in the `bincfg.labelling.NODE_LABELS` list. EG: the 0-th element would correspond to the 1's bit, the 1-th
-    element would correspond to the 2's bit, etc.
+    block_memory_addresses: 'Union[np.ndarray, None]'
+    """Integer memory addresses of basic blocks.
 
-    Also see :func:`~bincfg.MemCFG.get_block_labels`
+    Only saved if `keep_memory_addresses=True` when constructing the ``MemCFG``. This will be a 1-d unsigned integer numpy
+    array containing the memory addresses
     """
 
-    metadata = None
+    block_asm_mem_addr_idx: 'Union[np.ndarray, None]'
+    """Indices in ``block_memory_addresses`` that correspond to the assembly line memory addresses for basic blocks
+    
+    A 1-d numpy array of shape (num_blocks + 1,). Dtype is the smallest unsigned dtype needed to store the number of
+    assembly line memory addresses. Memory addresses for a block at index `i` would have a start index of 
+    `block_asm_mem_addr_idx[i]` and an end index of `block_asm_mem_addr_idx[i + 1]` in ``block_memory_addresses``.
+    Only saved if `keep_memory_addresses=True` when constructing the ``MemCFG``.
+    """
+
+    metadata: 'dict'
     """Dictionary of metadata associated with this MemCFG"""
 
-    graph_c = None
+    function_metadata: 'list[Union[int, dict]]'
+    """Metadata for functions
+    
+    A list of run length compressed metadata at the function level. We only compress metadata dictionaries that are empty.
+    Elements are in the same order as the function indices in `block_func_idx`. Elements are either dictionaries (for the
+    metadata of that current function), or integers indicating we should skip that many functions as they all have
+    no metadata.
+    """
+
+    block_metadata: 'list[Union[int, dict]]'
+    """Metadata for blocks
+    
+    A list of run length compressed metadata at the basic block level. We only compress metadata dictionaries that are empty.
+    Elements are in the same order as the block indices in `block_asm_idx`. Elements are either dictionaries (for the
+    metadata of that current block), or integers indicating we should skip that many blocks as they all have
+    no metadata.
+    """
+
+    graph_c: 'np.ndarray'
     """Array containing all of the outgoing edges for each block in order
     
     1-D numpy array of shape (num_edges,). Dtype will be the smallest unsigned dtype required to store the value
@@ -132,7 +166,7 @@ class MemCFG:
            locations)?
     """
 
-    graph_r = None
+    graph_r: 'np.ndarray'
     """Array containing information on the number of outgoing edges for each block
     
     1-D numpy array of shape (num_edges + 1,). Dtype will be the smallest unsigned dtype required to store the value
@@ -154,18 +188,16 @@ class MemCFG:
         block_flags int.
         """
 
-        IS_FUNCTION_CALL = 1 << 0, lambda block: block.is_function_call
+        IS_FUNCTION_CALL: 'Tuple[int, BlockInfoBitMaskFunctionType]' = (1 << 0, lambda block: block.is_function_call)
         """Bit set if this block is a function call. See :py:func:`~bincfg.cfg_basic_block.is_function_call`"""
-        IS_FUNCTION_ENTRY = 1 << 1, lambda block: block.is_function_entry
+        IS_FUNCTION_ENTRY: 'Tuple[int, BlockInfoBitMaskFunctionType]' = (1 << 1, lambda block: block.is_function_entry)
         """Bit set if this block is a function entry. See :py:func:`~bincfg.cfg_basic_block.is_function_entry`"""
-        IS_FUNCTION_RETURN = 1 << 2, lambda block: block.is_function_return
-        """Bit set if this block is a function return. See :py:func:`~bincfg.cfg_basic_block.is_function_return`"""
-        IS_IN_EXTERN_FUNCTION = 1 << 3, lambda block: block.parent_function.is_extern_function
+        IS_IN_EXTERN_FUNCTION: 'Tuple[int, BlockInfoBitMaskFunctionType]' = (1 << 2, lambda block: block.parent_function.is_extern_function)
         """Bit set if this block is within an external function. See :py:func:`~bincfg.cfg_function.is_extern_function`"""
-        IS_FUNCTION_JUMP = 1 << 4, lambda block: block.is_function_jump
+        IS_FUNCTION_JUMP: 'Tuple[int, BlockInfoBitMaskFunctionType]' = (1 << 3, lambda block: block.is_function_jump)
         """Bit set if this block is a function jump. IE: this block has a jump instruction that resolves to a basic block
         in a separate function. See :py:func:`~bincfg.cfg_basic_block.is_function_jump`"""
-        IS_MULTI_FUNCTION_CALL = 1 << 5, lambda block: 0
+        IS_MULTI_FUNCTION_CALL: 'Tuple[int, BlockInfoBitMaskFunctionType]' = (1 << 4, lambda block: 0)
         """Bit set if this block is a multi-function call. IE: this block has either two or more function call edges out,
         or one function call and two or more normal edges out. See :py:func:`~bincfg.cfg_basic_block.is_multi_function_call`
         
@@ -174,7 +206,7 @@ class MemCFG:
         """
 
     @staticmethod
-    def _block_flags_int(block):
+    def _block_flags_int(block: 'CFGBasicBlock') -> 'int':
         """Gets all of the block information and stores it as a integer of bit-set flags
 
         Args:
@@ -188,11 +220,8 @@ class MemCFG:
             block_flags |= bm.value[0] * bm.value[1](block)  # Times will convert boolean to 1 or 0
         return block_flags
 
-    def __init__(self, cfg, normalizer=None, inplace=False, using_tokens=None, force_renormalize=False):
-        # We can initialize empty if cfg is None
-        if cfg is None:
-            return
-
+    def __init__(self, cfg: 'CFG', normalizer: 'Optional[Union[str, NormalizerType]]' = None, keep_memory_addresses: 'bool' = False,
+                 inplace: 'bool' = False, using_tokens: 'Optional[Union[dict, AtomicTokenDict]]' = None, force_renormalize: 'bool' = False):
         # Make sure input is a cfg
         if not isinstance(cfg, CFG):
             raise TypeError("Can only build a MemCFG out of a CFG object, not '%s'" % type(cfg).__name__)
@@ -211,30 +240,33 @@ class MemCFG:
         self.tokens = {} if using_tokens is None else using_tokens
 
         if isinstance(self.tokens, AtomicTokenDict):
-            self.tokens.addtokens(*{t for block in cfg.blocks for l in block.asm_lines for t in l[1]})
+            self.tokens.addtokens(*{l for block in cfg.blocks for l in block.asm_lines})
         else:
             for block in cfg.blocks:
                 for l in block.asm_lines:
-                    for t in l[1]:
-                        self.tokens.setdefault(t, len(self.tokens))
+                    self.tokens.setdefault(l, len(self.tokens))
                     
         max_token = len(self.tokens)
+        max_asm_addr = default_max((a for b in cfg.blocks for a in b.asm_memory_addresses), 0)
+        max_block_addr = default_max((b.address for b in cfg.blocks), 0)
 
         # Make mappings from function names to indices. Make sure there aren't duplicates (most likely only going to
         #   occur in functions with no name)
         self.function_name_to_idx = {}
         function_addr_to_idx = {}
+        self.function_metadata = []
         for i, f in enumerate(cfg.functions):
-            if f.nice_name in self.function_name_to_idx:
-                func_name = f.nice_name
+            if f.name in self.function_name_to_idx:
+                func_name = f.name
                 fn_idx = 0
                 while func_name in self.function_name_to_idx:
-                    func_name = f.nice_name + '_%d' % fn_idx
+                    func_name = f.name + '_%d' % fn_idx
                     fn_idx += 1
             else:
-                func_name = f.nice_name
+                func_name = f.name
             self.function_name_to_idx[func_name] = i
             function_addr_to_idx[f.address] = i
+            self.function_metadata.append(f.metadata)
 
         # Make the data arrays
         self.asm_lines = np.empty([cfg.num_asm_lines], dtype=get_smallest_np_dtype(max_token))
@@ -244,10 +276,19 @@ class MemCFG:
         graph_c = []
         self.graph_r = np.empty([cfg.num_blocks + 1])
         self.block_labels = {}  # Mapping of block indices to block labels
+        self.block_metadata = []
 
         # Set the initial graph_r start and final block_asm_idx
         self.graph_r[0] = 0
         self.block_asm_idx[-1] = len(self.asm_lines)
+
+        if keep_memory_addresses:
+            self.block_memory_addresses = np.empty([cfg.num_blocks], dtype=get_smallest_np_dtype(max_block_addr, signed=True))
+            self.asm_memory_addresses = np.empty(sum(len(b.asm_memory_addresses) for b in cfg.blocks), dtype=get_smallest_np_dtype(max_asm_addr, signed=True))
+            self.block_asm_mem_addr_idx = np.empty([cfg.num_blocks + 1], dtype=get_smallest_np_dtype(cfg.num_asm_lines))
+            self.block_asm_mem_addr_idx[-1] = len(self.asm_memory_addresses)
+        else:
+            self.asm_memory_addresses, self.block_asm_mem_addr_idx, self.block_memory_addresses = None, None, None
 
         # Copy the metadata from the cfg
         self.metadata = cfg.metadata.copy()
@@ -256,14 +297,22 @@ class MemCFG:
         block_addr_to_idx = {block.address: i for i, block in enumerate(cfg.blocks)}
 
         # Convert the data at each block to better memory one
-        asm_line_idx = 0
+        asm_line_idx, asm_mem_idx = 0, 0
         for block_idx, block in enumerate(cfg.blocks):
 
-            # Get the assembly lines, and store the length of the assembly lines
+            # Get the assembly lines and memory addresses, and store the length of the assembly lines
             asm_line_end = asm_line_idx + block.num_asm_lines
-            self.asm_lines[asm_line_idx: asm_line_end] = [self.tokens[t] for l in block.asm_lines for t in l[1]]
+            self.asm_lines[asm_line_idx: asm_line_end] = [self.tokens[l] for l in block.asm_lines]
             self.block_asm_idx[block_idx] = asm_line_idx
             asm_line_idx = asm_line_end
+
+            # Add in the memory addresses if using
+            if self.asm_memory_addresses is not None:
+                self.block_memory_addresses[block_idx] = block.address
+                asm_mem_end = asm_mem_idx + len(block.asm_memory_addresses)
+                self.asm_memory_addresses[asm_mem_idx: asm_mem_end] = block.asm_memory_addresses
+                self.block_asm_mem_addr_idx[block_idx] = asm_mem_idx
+                asm_mem_idx = asm_mem_end
 
             # Get the block's function name
             self.block_func_idx[block_idx] = function_addr_to_idx[block.parent_function.address]
@@ -291,67 +340,86 @@ class MemCFG:
             # Set the flag for is_multi_function_call here so we don't have to call get_sorted_edges more than once
             self.block_flags[block_idx] = MemCFG._block_flags_int(block) | \
                 (MemCFG.BlockInfoBitMask.IS_MULTI_FUNCTION_CALL.value[0] * added_minus_1)
-
-            # Get the block label info
-            if len(block.labels) > 0:
-                block_val = 0
-                for label_num in block.labels:
-                    block_val |= 2 ** label_num
-                self.block_labels[block_idx] = block_val
+            
+            # Get the block metadata and memory address
+            self.block_metadata.append(block.metadata)
         
         # Conver graph_c and graph_r to numpy arrays
-        self.graph_c = np.array(graph_c, dtype=get_smallest_np_dtype(len(cfg.blocks_dict) + 1))
+        graphc_dtype = get_smallest_np_dtype(len(cfg.blocks_dict) + 1, signed=False)
+        self.max_graph_c_int = np.iinfo(graphc_dtype).max
+        self.graph_c = np.array([(v if v != -1 else self.max_graph_c_int) for v in graph_c], dtype=graphc_dtype)
         self.graph_r = np.cumsum(self.graph_r, dtype=get_smallest_np_dtype(len(self.graph_c)))
-        self.max_graph_c_int = np.iinfo(self.graph_c.dtype).max
+        
+        # Run length encode the metadata
+        self.function_metadata = _rl_encode_metadata(self.function_metadata)
+        self.block_metadata = _rl_encode_metadata(self.block_metadata)
     
-    def get_block(self, block_idx, as_dict=False):
-        """Returns all the info associated with the given block index
+    def get_block_info(self, block_idx):
+        """Returns all the info associated with the given block index as a dictionary
 
         Args:
             block_idx (int): integer block index
-            as_dict (bool): if True, will return a dictionary of the values with the same names in the "Returns" section
 
         Returns:
-            Tuple[np.ndarray, np.ndarray, int, bool, bool, bool, bool, bool, List[int]]: the block info - 
-                (asm_lines, edges_out, edge_types, function_idx, is_function_call, is_function_entry, is_function_return, 
-                is_extern_function, is_function_jump, is_block_multi_function_call, labels_list)
+            dict: the block info dictionary with keys/values:
+
+                * 'asm_lines' (np.ndarray): 1-d numpy array of unsigned integer assembly line tokens in this block
+                * 'asm_memory_addresses' (np.ndarray): 1-d numpy array of signed integer memory addresses
+                  for the assembly lines in this block. Values will be -1 if the memory addresses do not exist
+                * 'edges_out' (np.ndarray): 1-d numpy array of unsigned integer block indices for all
+                  of the edges out from this block
+                * 'edge_types' (np.ndarray): 1-d numpy array of uint8 values for the edge types associated
+                  with all of the edges out. These are the values of objects in the EdgeType enum. Currently: EdgeType.NORMAL == 1,
+                  EdgeType.FUNCTION_CALL == 2
+                * 'function_index' (int): the integer function index of the function this block resides in
+                * 'is_function_call' (bool): true if this block is a function call block (has at least one outgoing function call edge)
+                * 'is_function_entry' (bool): true if this block is a function entry block (has the same memory address
+                  as its parent function)
+                * 'is_extern_function' (bool): true if this block is within an external function (parent_function.is_extern_function is True)
+                * 'is_function_jump' (bool): true if this block is a function jump block (has a 'normal' edge to a block
+                  that is within another function)
+                * 'is_multi_function_call' (bool): true if this block is a multi-function call block (has 2 or more outgoing
+                  function call edges. IE: a call table)
+                * 'metadata' (dict): dictionary of metadata associated with this block
         """
-        ret = (self.get_block_asm_lines(block_idx),) + self.get_block_edges_out(block_idx, ret_edge_types=True) \
-            + (self.get_block_function_idx(block_idx),) + self.get_block_flags(block_idx) + (self.get_block_labels(block_idx),)
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+
+        ret = (self.get_block_asm_lines(block_idx),) + (self.get_block_asm_memory_addresses(block_idx),) + self.get_block_edges_out(block_idx, ret_edge_types=True) \
+            + (self.get_block_function_idx(block_idx),) + self.get_block_flags(block_idx) + (self.get_block_metadata(block_idx),)
         
-        if as_dict:
-            ret = {k: v for k, v in zip(['asm_lines', 'edges_out', 'edge_types', 'function_idx', 'is_function_call', 
-                    'is_function_entry', 'is_function_return', 'is_extern_function', 'is_function_jump', 
-                    'is_block_multi_function_call', 'labels_list'], ret)}
+        ret = {k: v for k, v in zip(['asm_lines', 'asm_memory_addresses', 'edges_out', 'edge_types', 'function_index', 'is_function_call', 
+                'is_function_entry', 'is_extern_function', 'is_function_jump', 'is_multi_function_call', 'metadata'], ret)}
         
         return ret
-    
-    def get_block_info(self, block_idx, as_dict=False):
-        """Alias for :func:`~bincfg.MemCFG.get_block`. Returns all the info associated with the given block index
 
-        Args:
-            block_idx (int): integer block index
-            as_dict (bool): if True, will return a dictionary of the values with the same names in the "Returns" section
-
-        Returns:
-            Tuple[np.ndarray, np.ndarray, int, bool, bool, bool, bool, bool, List[int]]: the block info - 
-                (asm_lines, edges_out, edge_types, function_idx, is_function_call, is_function_entry, is_function_return, 
-                is_extern_function, is_function_jump, is_block_multi_function_call, labels_list)
-        """
-        return self.get_block(block_idx, as_dict=as_dict)
-
-    def get_block_asm_lines(self, block_idx):
+    def get_block_asm_lines(self, block_idx: 'int') -> 'np.ndarray':
         """Get the asm lines associated with this block index
 
         Args:
-            block_idx (int): 
+            block_idx (int): integer block index
 
         Returns:
-            np.ndarray: a numpy array of assembly tokens
+            np.ndarray: a 1-d numpy array of unsigned integer assembly tokens
         """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return self.asm_lines[self.block_asm_idx[block_idx]:self.block_asm_idx[block_idx+1]]
+
+    def get_block_asm_memory_addresses(self, block_idx: 'int') -> 'np.ndarray':
+        """Get the asm memory addresses associated with this block index
+
+        Values are -1 if the memory address did not exist in that block
+
+        Args:
+            block_idx (int): integer block index
+
+        Returns:
+            np.ndarray: a 1-d numpy array of signed integer assembly tokens
+        """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+        return self.asm_memory_addresses[self.block_asm_mem_addr_idx[block_idx]:self.block_asm_mem_addr_idx[block_idx+1]]
     
-    def get_block_edges_out(self, block_idx, ret_edge_types=False):
+    def get_block_edges_out(self, block_idx: 'int', ret_edge_types: 'bool' = False) -> \
+        'Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]':
         """Get numpy array of block indices for all edges out associated with the given block index
 
         Args:
@@ -363,10 +431,15 @@ class MemCFG:
                     - 2: function call edge
 
         Returns:
-            np.ndarray: a numpy array of block indices
+            Union[np.ndarray, Tuple[np.ndarray, np.ndarray: 
+                either a 1-d numpy array of unsigned integer block indices for all edges out associated with the given 
+                block index, or if `ret_edge_types=True`, then a tuple of (block_edge_inds, edge_types) where the `edge_types`
+                is a 1-d numpy array of uint8 edge types with the same shape as block_edge_inds that designates the types
+                of the edges. Edge types will be the values of those in the `EdgeType` enum.
         """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+
         # Get all of the edges
-        #ret = self.graph_c[slice(*self.graph_r[block_idx:block_idx+2])]
         ret = self.graph_c[self.graph_r[block_idx]:self.graph_r[block_idx+1]]
 
         # Check if we are returning the edge types as well
@@ -383,24 +456,24 @@ class MemCFG:
                     #   the split_idx itself is also stored in the array)
                     split_idx = np.argwhere(ret == self.max_graph_c_int)[0][0]
                     return ret[ret != self.max_graph_c_int], \
-                        np.array([FUNCTION_CALL_EDGE_CONN_VALUE] * split_idx + [NORMAL_EDGE_CONN_VALUE] * (len(ret) - split_idx - 1))
+                        np.array([EdgeType.FUNCTION_CALL.value] * split_idx + [EdgeType.NORMAL.value] * (len(ret) - split_idx - 1))
                 
                 # Otherwise it is not a multi-function call. We can simply return ret, and edge types are either 
                 #   [function_call] or [function_call, normal]
                 else:
-                    return ret, np.array(([FUNCTION_CALL_EDGE_CONN_VALUE] if len(ret) == 1 else \
-                        [FUNCTION_CALL_EDGE_CONN_VALUE, NORMAL_EDGE_CONN_VALUE]), dtype=np.uint8)
+                    return ret, np.array(([EdgeType.FUNCTION_CALL.value] if len(ret) == 1 else \
+                        [EdgeType.FUNCTION_CALL.value, EdgeType.NORMAL.value]), dtype=np.uint8)
             
             # It's not a function call, so we can just return ret and all edge types must be normal edges
             else:
-                return ret, np.full(ret.shape, NORMAL_EDGE_CONN_VALUE, dtype=np.uint8)
+                return ret, np.full(ret.shape, EdgeType.NORMAL.value, dtype=np.uint8)
 
         # Otherwise we are not returning the edge types, just return all values in ret that are not the splitting value
         # We only need to remove the splitting value if there are more than two edges, AND it is a function call. Otherwise
         #   we are doing a useless numpy comparison and memory-grabbing every call which takes a non-neglible amount of time
-        return ret[ret != self.max_graph_c_int] #if len(ret) > 2 and self.is_block_function_call(block_idx) else ret
+        return ret[ret != self.max_graph_c_int]
 
-    def get_block_function_idx(self, block_idx):
+    def get_block_function_idx(self, block_idx: 'int') -> 'int':
         """Get the function index for the given block index
 
         Args:
@@ -409,9 +482,10 @@ class MemCFG:
         Returns:
             int: the integer function index for the given block index
         """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return self.block_func_idx[block_idx]
     
-    def get_block_function_name(self, block_idx):
+    def get_block_function_name(self, block_idx: 'int') -> 'str':
         """Get the function name for the given block index
         
         Functions without names will start with '__unnamed_func__'
@@ -422,6 +496,8 @@ class MemCFG:
         Returns:
             str: the function name for the given block index
         """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+
         func_idx = self.get_block_function_idx(block_idx)
 
         # Make an inverse mapping now that we know we are calling this function
@@ -430,150 +506,147 @@ class MemCFG:
 
         return self.function_idx_to_name[func_idx]
     
-    def get_block_flags(self, block_idx):
+    def get_block_memory_address(self, block_idx: 'int') -> 'int':
+        """Returns the memory address for the given block, if present, -1 if not present
+        
+        Args:
+            block_idx (int): integer block index
+        
+        Returns:
+            int: the memory address
+        """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+        return -1 if self.block_memory_addresses is None else self.block_memory_addresses[block_idx]
+    
+    def get_block_flags(self, block_idx: 'int') -> 'Tuple[bool, bool, bool, bool, bool, bool]':
         """Get all block flags for the given block index
 
         Args:
             block_idx (int): integer block index
 
         Returns:
-            Tuple[bool, bool, bool, bool, bool]: (is_block_function_call, is_block_function_start, is_block_function_return, 
+            Tuple[bool, bool, bool, bool, bool, bool]: (is_block_function_call, is_block_function_entry, 
                 is_block_extern_function, is_block_function_jump, is_block_multi_function_call)
         """
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+
         return self.is_block_function_call(block_idx), self.is_block_function_entry(block_idx), \
-            self.is_block_function_return(block_idx), self.is_block_extern_function(block_idx), \
-            self.is_block_function_jump(block_idx), self.is_block_multi_function_call(block_idx)
+            self.is_block_extern_function(block_idx), self.is_block_function_jump(block_idx), \
+            self.is_block_multi_function_call(block_idx)
     
-    def get_block_labels(self, block_idx):
-        """Returns a list of integer block labels for the given block_idx. 
+    def get_function_block_inds(self, func_idx: 'int') -> 'list[int]':
+        """Returns all of the block indices that are within the given function
         
-        Labels will be integers of the indices in NODE_LABELS. IE: if this CFG has labels ['ecryption', 'file_io', 
-        'network_io', 'error_handler', 'string_parser'], and a block at block_idx has block_labels of [0, 3], then that 
-        block would be both an 'ecryption' block and a 'error_handler' block. If a block has no labels ([]), then it 
-        should be assumed that we don't know what labels it should have, as opposed to it having no labels.
-
         Args:
-            block_idx (int): integer block index
-
+            func_idx (int): the integer function index
+        
         Returns:
-            List[int]: list of integer labels for the given block index
+            list[int]: list of integer block indices that are within the given function
         """
-        if block_idx in self.block_labels:
-            return list(i for i in range(len(NODE_LABELS)) if self.block_labels[block_idx] & 2 ** i != 0)
-        return []
-    
-    def get_function_block_inds(self, func_idx):
-        """Returns all of the block indices that are within the given function"""
+        assert_valid_idx(func_idx, self.num_functions, 'functions')
+
         if func_idx not in self.function_name_to_idx.values():
             raise ValueError("Unknown function index: %d" % func_idx)
         return [i for i in range(self.num_blocks) if self.block_func_idx[i] == func_idx]
+
+    def get_function_metadata(self, func_idx: 'Union[int, None]') -> 'Union[dict, list[dict]]':
+        """Returns the metadata associated with that function index
+        
+        Args:
+            func_idx (Union[int, None]): the integer function index of the metadata to get, or None to get the full
+                list of metadata
+        
+        Returns:
+            Union[dict, list[dict]]: dictionary of metadata associated with the given function index
+        """
+        if isinstance(func_idx, INTEGER_TYPES):
+            assert_valid_idx(func_idx, self.num_functions, 'functions')
+        return _decode_rl_metadata(self.function_metadata, func_idx)
+
+    def get_block_metadata(self, block_idx: 'Union[int, None]') -> 'Union[dict, list[dict]]':
+        """Returns the metadata associated with that function index
+        
+        Args:
+            block_idx (Union[int, None]): the integer block index of the metadata to get, or None to get the full
+                list of metadata
+        
+        Returns:
+            Union[dict, list[dict]]: dictionary of metadata associated with the given block index
+        """
+        if isinstance(block_idx, INTEGER_TYPES):
+            assert_valid_idx(block_idx, self.num_blocks, 'blocks')
+        return _decode_rl_metadata(self.block_metadata, block_idx)
     
-    def is_block_function_call(self, block_idx):
+    def is_block_function_call(self, block_idx: 'int') -> 'bool':
         """True if this block is a function call, False otherwise"""
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return (self.block_flags[block_idx] & MemCFG.BlockInfoBitMask.IS_FUNCTION_CALL.value[0]) > 0
     
-    def is_block_function_return(self, block_idx):
-        """True if this block is a function return, False otherwise"""
-        return (self.block_flags[block_idx] & MemCFG.BlockInfoBitMask.IS_FUNCTION_RETURN.value[0]) > 0
-    
-    def is_block_function_entry(self, block_idx):
+    def is_block_function_entry(self, block_idx: 'int') -> 'bool':
         """True if this block is a function entry, False otherwise"""
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return (self.block_flags[block_idx] & MemCFG.BlockInfoBitMask.IS_FUNCTION_ENTRY.value[0]) > 0
     
-    def is_block_extern_function(self, block_idx):
+    def is_block_extern_function(self, block_idx: 'int') -> 'bool':
         """True if this block is in an external function, False otherwise"""
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return (self.block_flags[block_idx] & MemCFG.BlockInfoBitMask.IS_IN_EXTERN_FUNCTION.value[0]) > 0
     
-    def is_block_function_jump(self, block_idx):
+    def is_block_function_jump(self, block_idx: 'int') -> 'bool':
         """True if this block is a function jump, False otherwise"""
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return (self.block_flags[block_idx] & MemCFG.BlockInfoBitMask.IS_FUNCTION_JUMP.value[0]) > 0
     
-    def is_block_multi_function_call(self, block_idx):
+    def is_block_multi_function_call(self, block_idx: 'int') -> 'bool':
         """True if this block is a multi-function call, False otherwise"""
+        assert_valid_idx(block_idx, self.num_blocks, 'blocks')
         return (self.block_flags[block_idx] & MemCFG.BlockInfoBitMask.IS_MULTI_FUNCTION_CALL.value[0]) > 0
     
-    def is_block_labeled(self, block_idx, label=None):
-        """Checks if the given block_idx is labeled
-
-        If label is None, returns True if the block at the given index has a label, False if it has no labels 
-        (self.block_labels[block_idx] == 0)
-        Otherwise returns True if the block at the given index has the given label, False if not
-
-        Args:
-            block_idx (int): integer block index
-            label (Union[str, int, None], optional): if not None, then the label to check the block_idx for. Can be 
-                either a string (whos lowercase name must be in NODE_LABELS), or an integer for the index in NODE_LABELS 
-                to check for. Otherwise if label is None, then this will check to see if the given block_idx is labeled 
-                at all. Defaults to None.
-
-        Raises:
-            ValueError: for a bad/unknown `label` value
-            TypeError: for a bad `label` type
-
-        Returns:
-            bool: True if the block has the label, False otherwise
-        """
-        if label is None:
-            return block_idx in self.block_labels and self.block_labels[block_idx] != 0
-        
-        # Check for bad label values
-        if isinstance(label, str):
-            if label.lower() not in NODE_LABELS:
-                raise ValueError("Unknown label: %s" % label)
-            label = NODE_LABELS.index(label.lower())
-        elif isinstance(label, int):
-            if label < 0 or label >= len(NODE_LABELS):
-                raise ValueError("Cannot get label index %d of NODE_LABELS with length %d" % (label, len(NODE_LABELS)))
-        else:
-            raise TypeError("Unknown label type: %s. Should be None, string, or int" % type(label))
-        
-        # Check block for specific label
-        return block_idx in self.block_labels and self.block_labels[block_idx] & 2 ** label != 0
-    
     @property
-    def num_blocks(self):
+    def num_blocks(self) -> 'int':
         """The number of blocks in this ``MemCFG``"""
         return len(self.block_func_idx)
     
     @property
-    def num_edges(self):
+    def num_edges(self) -> 'int':
         """The number of edges in this ``MemCFG``"""
-        return len(self.graph_c)
+        return len(self.graph_c[self.graph_c != self.max_graph_c_int])
     
     @property
-    def num_asm_lines(self):
+    def num_asm_lines(self) -> 'int':
         """The number of assembly lines in this ``MemCFG``"""
         return len(self.asm_lines)
     
     @property
-    def num_functions(self):
+    def num_functions(self) -> 'int':
         """The number of functions in this ``MemCFG``"""
         return len(self.function_name_to_idx)
     
-    def update_metadata(self, other):
+    @property
+    def inv_tokens(self) -> 'dict[int, str]':
+        """Returns the inverse of `self.tokens`: dictionary mapping token integers to their original strings"""
+        return {v:k for k, v in self.tokens.items()}
+    
+    def update_metadata(self, other: 'dict') -> 'Self':
         """Updates this MemCFG's metadata dictionary with the given dictionary, and returns self"""
         self.metadata.update(other)
         return self
     
-    def set_metadata(self, metadata):
-        """Sets the metadata and returns self"""
-        self.metadata = metadata
-        return self
-    
-    def set_tokens(self, tokens):
+    def set_tokens(self, tokens: 'Union[dict, AtomicTokenDict]') -> 'Self':
         """Sets this MemCFG's tokens to the given tokens, and returns self"""
         self.tokens = tokens
         return self
     
-    def normalize(self, normalizer=None, using_tokens=None, inplace=True, force_renormalize=False):
+    def normalize(self, normalizer: 'Optional[Union[str, NormalizerType]]' = None, using_tokens: 'Union[dict, AtomicTokenDict]' = None, 
+                  inplace: 'bool' = True, force_renormalize: 'bool' = False) -> 'MemCFG':
         """Normalizes this memcfg in-place.
 
         Args:
-            normalizer (Union[str, Normalizer], optional): the normalizer to use. Can be a ``Normalizer`` object, or a 
+            normalizer (Optional[Union[str, NormalizerType]]): the normalizer to use. Can be a ``Normalizer`` object, or a 
                 string, or None to use the default BaseNormalizer(). Defaults to None.
-            using_tokens (TokenDictType): tokens to use when normalizing
-            inplace (bool, optional): whether or not to normalize inplace. Defaults to True.
-            force_renormalize (bool, optional): by default, this method will only normalize this cfg if the passed 
+            using_tokens (Union[dict, AtomicTokenDict]): tokens to use when normalizing
+            inplace (bool): whether or not to normalize inplace. Defaults to True.
+            force_renormalize (bool): by default, this method will only normalize this cfg if the passed 
                 `normalizer` is != `self.normalizer`. However if `force_renormalize=True`, then this will be renormalized
                 even if it has been previously normalized with the same normalizer. Defaults to False.
 
@@ -584,7 +657,7 @@ class MemCFG:
                                   force_renormalize=force_renormalize)
     
     @property
-    def architecture(self):
+    def architecture(self) -> 'Architectures':
         """Returns the architecture being used. Currently a WIP
         
         Checks for an 'arch' or 'architecture' key in the metadata and returns it if it is known. Can currently return:
@@ -604,42 +677,24 @@ class MemCFG:
         else:
             raise ValueError("Unknown architecture value: %s" % repr(arch))
     
-    def get_edge_values(self):
+    def get_edge_values(self) -> 'np.ndarray':
         """Returns the edge type values
         
         Returns a 1-d numpy array of length self.num_edges and dtype np.int32 containing an integer type for each
-        edge depending on if it is a normal/function call/call return edge:
+        edge depending on if it is a normal or function call edge. Edges are directed and have values from `EdgeType` enum.
+        Values:
 
-        Edges are directed and have values:
-
-            - 0: No edge
-            - 1: Normal edge
-            - 2: Function call edge
+            - 1: 'normal' edges
+            - 2: 'function call' edges
         
         NOTE: this returns as type np.int32 since pytorch can be finicky about what dtypes it wants
 
         Returns:
-            np.ndarray: the edge type values
+            np.ndarray: a 1-d numpy array of length self.num_edges and dtype np.int32 containing integer edge types
         """
-        edge_values = np.empty(self.graph_c.shape, dtype=np.int32)
-        evi = 0
-        for bi in range(self.num_blocks):
-            l = self.graph_r[bi + 1] - self.graph_r[bi]
-            if self.is_block_function_call(bi):
-                if l >= 2:
-                    edge_values[evi:evi+2] = (FUNCTION_CALL_EDGE_CONN_VALUE, NORMAL_EDGE_CONN_VALUE)
-                    evi += 2
-                else:
-                    assert l == 1
-                    edge_values[evi:evi + 1] = FUNCTION_CALL_EDGE_CONN_VALUE
-                    evi += 1
-            else:
-                edge_values[evi:evi + l] = NORMAL_EDGE_CONN_VALUE
-                evi += l
-
-        return edge_values
+        return np.array([v for b in range(self.num_blocks) for v in self.get_block_edges_out(b, ret_edge_types=True)[1]], dtype=np.int32)
     
-    def get_coo_indices(self):
+    def get_coo_indices(self) -> 'np.ndarray':
         """Returns the COO indices for this MemCFG
 
         Returns a 2-d numpy array of shape (num_edges, 2) of dtype np.int32. Each row is an edge, column 0 is the 'row' 
@@ -663,42 +718,45 @@ class MemCFG:
         NOTE: pytorch sparse_coo_tensor's indicies are the transpose of the array this method returns
 
         Returns:
-            np.ndarray: the coo indices
+            np.ndarray: a 2-d numpy array of shape (num_edges, 2) of dtype np.int32 containing COO indices
         """
         inds = np.empty([self.num_edges, 2], dtype=np.int32)
+        start = 0
         for bi in range(self.num_blocks):
-            start, end = self.graph_r[bi], self.graph_r[bi + 1]
+            edges_out = self.get_block_edges_out(bi, ret_edge_types=False)
+            end = start + len(edges_out)
             inds[start:end, 0] = bi
-            inds[start:end, 1] = self.graph_c[start:end]
+            inds[start:end, 1] = edges_out
+            start = end
         return inds
     
-    def to_adjacency_matrix(self, type='np', sparse=False):
+    def to_adjacency_matrix(self, type: 'Literal["np", "numpy", "torch"]' = 'np', sparse: 'bool' = False) ->\
+        'Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]':
         """Returns an adjacency matrix representation of this memcfg's graph connections
 
-        Connections will be directed and have values:
+        Edges are directed and have values from `EdgeType` enum. Values:
 
-            - 0: No edge
-            - 1: Normal edge
-            - 2: Function call edge
-
-        See :func:`bincfg.memcfg.to_adjacency_matrix` for more details
+            - 1: 'normal' edges
+            - 2: 'function call' edges
 
         Args:
-            type (str, optional): the type of matrix to return. Defaults to 'np'. Can be:
+            type (Literal["np", "numpy", "torch"]): the type of matrix to return. Defaults to 'np'. Can be:
 
                 - 'np'/'numpy' for a numpy ndarray (dtype: np.int32)
                 - 'torch'/'pytorch' for a pytorch tensor (type: LongTensor)
             
-            sparse (bool, optional): whether or not the return value should be a sparse matrix. Defaults to False. Has 
+            sparse (bool): whether or not the return value should be a sparse matrix. Defaults to False. Has 
                 different behaviors based on type:
 
-                - numpy array: returns a 2-tuple of sparse COO representation (indices, values). 
+                - numpy array: returns a 2-tuple of sparse COO representation (indices, values).
+                    NOTE: the indices are the transpose of those from `get_coo_indices()`
                     NOTE: if you want sparse CSR format, you already have it with self.graph_c and self.graph_r
                 - pytorch tensor: returns a pytorch sparse COO tensor. 
                     NOTE: not using sparse CSR format for now since it seems to have less documentation/supportedness. 
 
         Returns:
-            Union[np.ndarray, torch.Tensor]: an adjacency matrix representation of this ``MemCFG``
+            Union[np.ndarray, Tuple[np.ndarray, np.ndarray: 
+                an adjacency matrix representation of this ``MemCFG``
         """
         type = type.lower()
 
@@ -718,59 +776,83 @@ class MemCFG:
         else:
             raise ValueError("Unknown adjacency matrix type: '%s'" % type)
     
-    def to_cfg(self):
-        """Converts this MemCFG back into a CFG, though some information may have been lost
+    def to_cfg(self) -> 'CFG':
+        """Converts this MemCFG back into a CFG
         
-        Specifically, the following information will/may have been lost:
-
-            - memory addresses have been erased. Fake ones will be used in the construction of the new CFG. There is
-              no guarantee about the order/values of these memory addresses, only that there will be a unique one for
-              each basic block, and each function will have the same address as its entry basic block.
-            - assembly lines may have lost some information depending on the normalization method used when building
-              this MemCFG
-         
-        All other information should be the same as the original CFG including:
-
-            - basic blocks and functions
-            - basic block and function information (excluding addresses) such as function names, 
+        NOTE: if `keep_memory_addresses=False` when constucting this MemCFG, then memory addresses will not be present
+        and basic blocks will be given a memory address that is just their index in the block list
         """
-        raise NotImplementedError
+        cfg = CFG(metadata=self.metadata, normalizer=self.normalizer)
+
+        # Build the blocks
+        edge_types = [None] * (max(et.value for et in EdgeType) + 1)
+        for et in EdgeType:
+            edge_types[et.value] = et.name.lower()
+
+        block_metadata = self.get_block_metadata(None)
+        block_addrs = self.block_memory_addresses if self.block_memory_addresses is not None else np.arange(self.num_blocks)
+
+        blocks = [CFGBasicBlock(
+            address = block_addrs[block_idx],
+            edges_out = [(None, block_addrs[addr], edge_types[et]) for addr, et in zip(*self.get_block_edges_out(block_idx, ret_edge_types=True))], 
+            asm_lines = [self.inv_tokens[t] for t in self.asm_lines[self.block_asm_idx[block_idx]:self.block_asm_idx[block_idx+1]]],
+            asm_memory_addresses = self.asm_memory_addresses[self.block_asm_mem_addr_idx[block_idx]:self.block_asm_mem_addr_idx[block_idx+1]]\
+                if self.asm_memory_addresses is not None else None,
+            metadata = block_metadata[block_idx],
+        ) for block_idx in range(self.num_blocks)]
+
+        # Build the functions
+        func_metadata = self.get_function_metadata(None)
+        funcs = [CFGFunction(metadata=func_metadata[func_idx]) for func_idx in range(self.num_functions)]
+        for block_idx in range(self.num_blocks):
+            func_idx = self.get_block_function_idx(block_idx)
+
+            funcs[func_idx].blocks.append(blocks[block_idx])
+            funcs[func_idx].name = self.get_block_function_name(block_idx)
+            if self.is_block_extern_function(block_idx):
+                funcs[func_idx]._is_extern_function = True
+            if self.is_block_function_entry(block_idx):
+                funcs[func_idx].address = blocks[block_idx].address
+        
+        # Add the functions to the cfg and return
+        cfg.add_function(*funcs)
+        return cfg
     
-    def save(self, path):
+    def save(self, path: 'str') -> 'None':
         """Saves this MemCFG to the given path"""
         with open(path, 'wb') as f:
             pickle.dump(self, f)
     
-    def dumps(self):
+    def dumps(self) -> 'str':
         """Returns this object pickled with pickle.dumps()"""
         return pickle.dumps(self)
     
-    def drop_tokens(self):
+    def drop_tokens(self) -> 'Self':
         """Sets the tokens in this normalizer to None. Make sure you only do this if tokens are saved elsewhere! Returns self"""
         self.tokens = None
         return self
     
     @classmethod
-    def load(cls, path):
+    def load(cls, path: 'str') -> 'MemCFG':
         """Loads a MemCFG from the given path"""
         with open(path, 'rb') as f:
             return pickle.load(f)
         
-    def __str__(self):
-        return "MemCFG with normalizer: %s and %d functions, %d blocks, %d assembly lines, and %d edges" % \
-            (repr(str(self.normalizer)), self.num_functions, self.num_blocks, self.num_asm_lines, self.num_edges)
+    def __str__(self) -> 'str':
+        return "MemCFG with normalizer: %s and %d functions, %d blocks, %d assembly lines, and %d edges. Metadata:\n%s" % \
+            (repr(str(self.normalizer)), self.num_functions, self.num_blocks, self.num_asm_lines, self.num_edges, self.metadata)
     
-    def __repr__(self):
+    def __repr__(self) -> 'str':
         return self.__str__()
 
-    def __getstate__(self):
+    def __getstate__(self) -> 'dict':
         """State for pickling"""
         ret = self.__dict__.copy()
         if 'function_idx_to_name' in ret:
             del ret['function_idx_to_name']
         return ret
     
-    def __setstate__(self, state):
+    def __setstate__(self, state: 'dict') -> 'None':
         """Set state for pickling"""
         for k, v in state.items():
             setattr(self, k, v)
@@ -778,119 +860,89 @@ class MemCFG:
         if not hasattr(self, 'max_graph_c_int'):
             self.max_graph_c_int = np.iinfo(self.graph_c.dtype).max
     
-    def __eq__(self, other):
+    def __eq__(self, other) -> 'bool':
         return isinstance(other, MemCFG) and all(eq_obj(self, other, selector=s) for s in [
-            'asm_lines', 'block_asm_idx', 'block_func_idx', 'block_flags', 'graph_c', 'graph_r',
-            'block_labels', 'metadata', 'function_name_to_idx', 'normalizer', 'tokens',
+            'normalizer', 'tokens', 'function_name_to_idx', 'asm_lines', 'asm_memory_addresses', 'block_asm_idx', 'block_func_idx', 
+            'block_flags',  'metadata', 'function_metadata', 'block_metadata', 'graph_c', 'graph_r', 'block_labels'
         ])
     
-    def __hash__(self):
+    def __hash__(self) -> 'hash':
         return hash_obj([
-            self.asm_lines, self.block_asm_idx, self.block_func_idx, self.block_flags, self.graph_c, self.graph_r,
-            self.block_labels, self.metadata, self.function_name_to_idx, self.tokens, self.normalizer,
+            self.normalizer, self.tokens, self.function_name_to_idx, self.asm_lines, self.asm_memory_addresses, 
+            self.block_asm_idx, self.block_func_idx, self.block_flags, self.metadata, self.function_metadata, 
+            self.block_metadata, self.graph_c, self.graph_r, self.block_labels,
         ], return_int=True)
     
-    def hash(self, strict=True, num_wl_iters=3):
-        """Returns an integer hash of this MemCFG
-        
-        Args:
-            strict (str): whether or not to do a strict hashing. If true, then this does the strictest hashing, including 
-                things like function names, etc. This is the default behavior, and the same as the __hash__ function. If
-                False, then this does a less strict hashing using only things like graph/function topology and assembly
-                lines (not addresses). This performs multiple passes of the weisfeiler lehman kernel to produce the final
-                hash. The nodes are then aggregated into function hashes, and the WL kernel is applied to the function
-                call graph multiple times as well. Those function hashes are then aggregated into the final binary hash.
-                This way, we should be invariant to node rearrangings (within the same function) as well as function
-                rearrangings. This, however, is not perfect. Any two CFG's with differing hashes are for sure different
-                (there are no false negatives), however it is possible for two differing CFG's to hash to the same
-                value depending on graph structure (although, it is unlikely for genuine binaries)
-            num_wl_iters (int): the number of iterations of the weisfeiler lehman kernel to apply
-        """
-        _INT_DTYPE = np.uint64
 
-        if strict:
-            return self.__hash__()
-        
-        # Generate the initial node states by hashing their data. Also save function info that will be used later
-        block_hashes = np.zeros([self.num_blocks], dtype=_INT_DTYPE)
-        func_block_inds = [[] for _ in range(len(self.function_name_to_idx))]
-        func_call_inds = []
-        for i in range(self.num_blocks):
-            block_info = self.get_block(i, as_dict=True)
+def _rl_encode_metadata(meta_list: 'list[dict]') -> 'list[Union[int, dict]]':
+    """Run length encodes metadata. Only encodes empty dictionaries for now"""
+    ret = []
+    for d in meta_list:
+        if d is None or len(d) == 0:
+            # If we need to insert a new integer for rl encoding
+            if len(ret) == 0 or isinstance(ret[-1], dict):
+                ret.append(1)
+            else:
+                ret[-1] += 1
+        else:
+            ret.append(d)
+    return ret
 
-            # Keep track of the function info
-            func_block_inds[block_info['function_idx']].append(i)
-            func_call_inds += [(block_info['function_idx'], self.block_func_idx[block_info['edges_out'][tidx]]) for tidx, t in enumerate(block_info['edge_types']) if t == FUNCTION_CALL_EDGE_CONN_VALUE]
 
-            # Remove any edge and function information (that will come later in the WL passes)
-            del block_info['edges_out'], block_info['edge_types'], block_info['function_idx']
-            block_info['asm_lines'] = [self.tokens[i] for i in block_info['asm_lines']]
-
-            block_hashes[i] = hash_obj(block_info, return_int=True) % np.iinfo(_INT_DTYPE).max
-        
-        # Get the node adjacency matrix. We can keep function call edges, we just make sure their edge types are included
-        #   as a part of the hashing process
-        indices, values = self.to_adjacency_matrix(type='np', sparse=True)
-
-        # Perform some number of WL iterations on nodes
-        for it in range(num_wl_iters):
-            block_hashes = _sparse_wl_iteration(block_hashes, indices, values)
-
-        # Aggregate blocks into function hashes then multiply by another prime and add in an extra value in case some
-        #   functions have no blocks, and find the unique indices in func_call_inds
-        func_hashes = np.array([block_hashes[fbis].sum() for fbis in func_block_inds]) * 37 + 41
-        func_call_inds = np.unique(func_call_inds).T
-        func_values = np.ones([func_call_inds.shape[1]])
-
-        # Perform some number of WL iterations on functions
-        for it in range(num_wl_iters):
-            func_hashes = _sparse_wl_iteration(func_hashes, func_call_inds, func_values)
-        
-        # Now we can aggregate all of the function hashes into the final binary hash and return
-        return func_hashes.sum()
+def _decode_rl_metadata(meta_list: 'list[Union[int, dict]]', idx: 'Optional[int]' = None):
+    """Decodes run length encoded metadata lists
     
-    def __lt__(self, other):
-        import warnings
-        warnings.warn("Less than is not currently implemented for MemCFG's!")
-        return False
-
-
-_SPARSE_WL_PRIMES = np.array([17, 19, 31])  # The first one won't ever be used since values is 1 or 2, but oh well
-def _sparse_wl_iteration(hashes, indices, values):
-    """Perform a single WL iteration and return the new hashes
-    
-    Can be performed on both node and function hashings
+    Assumes 0 < `idx` < number of functions
 
     Args:
-        hashes (np.ndarray): 1-d integer numpy array of the current hashes of shape (num_objects,)
-        indices (np.ndarray): 2-d integer numpy array of indices in a sparse COO tensor of shape (2, num_non_zero). These
-            correspond to the non zero coordinates in the adjacency matrix
-        values (np.ndarray): 1-d integer numpy array of the connection types of shape (num_non_zero,). For basic blocks,
-            these values can either be 1 or 2 (NORMAL_EDGE, FUNCTION_CALL_EDGE). For functions, these should all be 1's
-    """ 
-    # Attempt to load either torch or scipy to perform sparse matrix multiplies
-    torch = get_module('torch', raise_err=False)
-    scipy = get_module('scipy', raise_err=False)
-    if torch is None and scipy is None:
-        warnings.warn("Could not load either torch or scipy to perform sparse matrix multiplications, this will be slow...")
-    
-    # Convert the values to primes so we have unique hashes
-    values = _SPARSE_WL_PRIMES[values]
-    
-    # If pytorch is available, do a simple sparse matrix multiply to get the new dense values
-    if torch is not None:
-        adj_mat = torch.sparse_coo_tensor(indices=indices, values=values, shape=(len(hashes), len(hashes)))
-        hashes = torch.tensor(hashes, dtype=torch.uint64).view([-1, 1])
-        new_hashes = torch.sparse.mm(adj_mat, hashes).view([-1]).numpy()
-    
-    # If scipy is available, we can use that
-    elif scipy is not None:
-        adj_mat = scipy.sparse.coo_matrix((values, (indices[0, :], indices[1, :]))).tocsr()
-        new_hashes = (adj_mat @ hashes.reshape([-1, 1])).reshape([-1])
+        meta_list (list[Union[int, dict]]): the metadata compressed list
+        idx (Optional[int]): if None, then this will return the full uncompressed list. Otherwise this will return the
+            element at this index
+    """
+    # If we are just returning the full list of metadata
+    if idx is None:
+        ret = []
+        for e in meta_list:
+            if isinstance(e, int):
+                ret += [{} for _ in range(e)]
+            else:
+                ret.append(e)
+        return ret
 
-    # Otherwise, we're doing slow numpy version
-    else:
-        raise NotImplementedError("Slow numpy WL hashing")
+    assert 0 <= idx < len(meta_list) + sum((e - 1) for e in meta_list if isinstance(e, int))
+
+    # Otherwise, we can stop early if possible
+    curr_idx = 0
+    ml_idx = 0
+    while True:
+        if curr_idx == idx:
+            return {} if isinstance(meta_list[ml_idx], int) else meta_list[ml_idx]
+        elif isinstance(meta_list[ml_idx], int):
+            # If our index is in this range, return empty dict
+            if curr_idx <= idx < curr_idx + meta_list[ml_idx]:
+                return {}
+            curr_idx += meta_list[ml_idx]
+        else:
+            curr_idx += 1
+        ml_idx += 1
+
+    # We should not be able to reach here
+    assert False
+
+
+def assert_valid_idx(idx: 'int', max_val: 'int', objects_str: 'str') -> 'None':
+    """Asserts that the idx passed is >= 0 and < max_val. `objects_str` is the type of object for error message (IE: 'blocks', 'functions', etc.)"""
+    func_name = repr(inspect.getframeinfo(inspect.currentframe().f_back)[2])
+    if idx < 0:
+        raise ValueError("Index passed to function %s must be non-negative, got: %d" % (func_name, idx))
+    elif idx >= max_val:
+        raise ValueError("Index passed to function %s must be < the maximum number of %s (%d), got: %d" % (func_name, objects_str, max_val, idx))
+
+
+def default_max(iterable, default=None):
+    """Returns the max value in `iterable`, or `default` value if len(iterable) == 0"""
+    try:
+        return max(iterable)
+    except ValueError:
+        return default
     
-    # Now, we can add on the old hashes, multiplied by some more primes. Overflows should automatically wrap thanks to numpy
-    return hashes * 13 + new_hashes * 11

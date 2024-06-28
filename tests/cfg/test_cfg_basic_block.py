@@ -278,20 +278,20 @@ def test_has_edge():
                         b.has_edge(0, direction='aaa')
 
 _EQ_BLOCKS = [
-    ([None, None, None, None, None, None], 'a'),
-    ([-1, set(), set(), [], [], {}], 'a'),
-    ([-1, set(), set(), [], [], {'vals': 10}], 'b'),
-    ([10, set(), set(), [], [], {}], 'c'),
-    ([None, set(), set(), [1], [1], {}], 'd'),
-    ([1, set(), set(), [1], [1], {}], 'd'),
-    ([10, set([1, 2, 3]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b': 'b'}}], 'e'),
-    ([10, set([1, 2, 3]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b': 'b'}}], 'e'),
-    ([10, set([1, 2]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b': 'b'}}], 'f'),
-    ([10, set([1, 2, 3]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b2': 'b'}}], 'g'),
+    ([None, None, None, None, None, None], 'a', 2303513372440043212),
+    ([-1, set(), set(), [], [], {}], 'a', 2303513372440043212),
+    ([-1, set(), set(), [], [], {'vals': 10}], 'b', 517139234453982774),
+    ([10, set(), set(), [], [], {}], 'c', 2058733285442219295),
+    ([None, set(), set(), [1], [1], {}], 'd', 412735380168654700),
+    ([1, set(), set(), [1], [1], {}], 'd', 412735380168654700),
+    ([10, set([1, 2, 3]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b': 'b'}}], 'e', 1345849587625969234),
+    ([10, set([1, 2, 3]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b': 'b'}}], 'e', 1345849587625969234),
+    ([10, set([1, 2]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b': 'b'}}], 'f', 1917795210026091466),
+    ([10, set([1, 2, 3]), set(['a', 'b', 'c']), [1, 2], [5, 7], {'meta': {'a': 10, 'b2': 'b'}}], 'g', 1288331464110070392),
 ]
-@pytest.mark.parametrize('args2,v2', _EQ_BLOCKS)
-@pytest.mark.parametrize('args1,v1', _EQ_BLOCKS)
-def test_eq_and_hash(args1, v1, args2, v2):
+@pytest.mark.parametrize('args2,v2,h2', _EQ_BLOCKS)
+@pytest.mark.parametrize('args1,v1,h1', _EQ_BLOCKS)
+def test_eq_and_hash(args1, v1, h1, args2, v2, h2, print_hashes):
     """Equality and hashing
     
     Check for: 'address' - int, 'edges_in' - set, 'edges_out' - set, 'asm_lines' - list, 'asm_memory_addresses' - list, 
@@ -306,9 +306,15 @@ def test_eq_and_hash(args1, v1, args2, v2):
     
     b1, b2 = _build_b(args1), _build_b(args2)
 
+    if print_hashes:
+        print(__file__+'-eq_and_hash', v1, hash(b1), v2, hash(b2))
+    else:  # Don't test while printing
+        assert hash(b1) == h1
+        assert hash(b2) == h2
+
     check_builtins(b1)
     check_builtins(b2)
-    
+
     if v1 == v2:
         assert b1 == b2
         assert b2 == b1
@@ -320,10 +326,15 @@ def test_eq_and_hash(args1, v1, args2, v2):
 
 
 @pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
-def test_manual_cfg_blocks(cfg_func):
+def test_manual_cfg_blocks(cfg_func, print_hashes):
     """Building the manual_cfg and checking its blocks"""
     res = cfg_func(build_level='block')
     blocks, expected = res['blocks'], res['expected']
+
+    if print_hashes:
+        print(__file__+'-manual_cfg-'+res['file'], {b.address: hash(b) for b in blocks.values()})
+    else:
+        assert {b.address: hash(b) for b in blocks.values()} == expected['block_hashes']
 
     assert len(blocks) == len(expected['sorted_block_order'])
 

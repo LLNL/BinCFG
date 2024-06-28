@@ -1,8 +1,6 @@
 bincfg.cfg package
 ==================
 
-See the homepage for a quick example of how to use these cfg objects.
-
 Submodules
 ----------
 

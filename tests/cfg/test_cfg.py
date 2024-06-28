@@ -1,13 +1,19 @@
 import pytest
 import pickle
 import copy
+import os
 from bincfg import CFG, X86DeepSemanticNormalizer, Architectures, CFGEdge, EdgeType, CFGBasicBlock, CFGFunction, get_architecture
 from .manual_cfgs import get_all_manual_cfg_functions
 
 
-def test_build_cfg():
+def test_build_cfg(print_hashes):
     """Building a blank CFG object"""
     cfg = CFG()
+
+    if print_hashes:
+        print(__file__+'-empty', hash(cfg))
+    else:
+        assert hash(cfg) == 2176661656791943841
 
     assert cfg.normalizer is None
     assert isinstance(cfg.metadata, dict) and cfg.metadata == {}
@@ -152,10 +158,26 @@ def test_manual_cfgs_get_funcs_and_blocks(cfg_func):
 
 
 @pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
-def test_manual_cfgs_eq_and_hash(cfg_func):
+def test_manual_cfgs_inputs(cfg_func):
+    """Tests that the inputs are converted into the expected CFG() when passed to the initializer"""
+    res = cfg_func(build_level='cfg')
+    cfg: CFG = res['cfg']
+
+    for input in res['inputs']:
+        new_cfg = CFG(input)
+        assert cfg.update_metadata({'file_type': new_cfg.metadata['file_type']}) == new_cfg
+
+
+@pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
+def test_manual_cfgs_eq_and_hash(cfg_func, print_hashes):
     """Tests all manual cfgs are equal correctly with working strict hashes"""
     res = cfg_func(build_level='cfg')
     cfg: CFG = res['cfg']
+
+    if print_hashes:
+        print(__file__+'-manual_cfg-'+res['file'], hash(cfg))
+    else:
+        assert hash(cfg) == res['expected']['cfg_hash']
 
     all_cfgs = []
     hashes = set()
@@ -203,6 +225,32 @@ def test_manual_cfgs_conversions(cfg_func):
 
     check_expected(cfg, blocks, funcs, expected)
 
+    # Reading in from file
+    outpath = os.path.join(os.path.dirname(__file__), '_temp_test_cfg.txt')
+    for input_str in res['inputs']:
+        with open(outpath, 'w') as f:
+            f.write(input_str)
+
+        for read_type in ['read', 'readio', 'readlines', 'readstr']:
+            if read_type == 'read':
+                cfg2 = CFG(outpath)
+            elif read_type == 'readio':
+                with open(outpath, 'r') as f:
+                    cfg2 = CFG(f)
+            elif read_type == 'readlines':
+                with open(outpath, 'r') as f:
+                    cfg2 = CFG(f.readlines())
+            elif read_type == 'readstr':
+                with open(outpath, 'r') as f:
+                    cfg2 = CFG(f.read())
+            
+            # Fix the metadata
+            cfg2.metadata = cfg.metadata
+
+            check_expected(cfg2, blocks, funcs, expected)
+            assert cfg == cfg2
+    os.remove(outpath)
+
     # Pickling
     cfg2 = pickle.loads(pickle.dumps(cfg))
     check_expected(cfg2, blocks, funcs, expected)
@@ -227,6 +275,11 @@ def test_manual_cfgs_conversions(cfg_func):
     cfg2.blocks[3].metadata.update({'a': 10})
     assert cfg2 != cfg
 
+    # Networkx constructor
+    cfg2 = CFG(cfg.to_networkx())
+    check_expected(cfg2, blocks, funcs, expected)
+    assert cfg2 == cfg
+
     # CFG build code
     build_func_str = ("def _build_cfg():\n%s\nreturn __auto_cfg" % cfg.get_cfg_build_code()).replace('\n', '\n    ')
     exec(build_func_str)
@@ -235,6 +288,9 @@ def test_manual_cfgs_conversions(cfg_func):
     assert cfg2 == cfg
     cfg2.functions_dict[123456789] = CFGFunction(address=123456789)
     assert cfg2 != cfg
+
+    # Copy constructor
+    assert CFG(cfg) == cfg
 
 
 def check_expected(cfg: CFG, blocks, funcs, expected):

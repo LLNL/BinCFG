@@ -3,15 +3,15 @@ import bincfg
 from .x86_tokenizer import Tokens, X86_REGISTER_SIZES, X86_MEMORY_SIZES
 from ..norm_utils import imm_to_int, IMMEDIATE_VALUE_STR, GENERAL_REGISTER_STR, MEM_SIZE_TOKEN_STR, JUMP_DESTINATION_STR, \
     MEMORY_EXPRESSION_STR, FUNCTION_CALL_STR, MULTI_FUNCTION_CALL_STR, RECURSIVE_FUNCTION_CALL_STR, EXTERNAL_FUNCTION_CALL_STR, \
-    INTERNAL_FUNCTION_CALL_STR, DISPLACEMENT_IMMEDIATE_STR, STRING_LITERAL_STR
+    INTERNAL_FUNCTION_CALL_STR, DISPLACEMENT_IMMEDIATE_STR, STRING_LITERAL_STR, RE_SPACING
 
 
 # Regex's to check if registers are general or not, and to remove number information.
-RE_GENERAL_REGISTER_MATCH = re.compile(r'r[0-9]+[dwb]?|[re]?[abcd]x|[abcd][lh]|[re]?[sd]il?')
+RE_GENERAL_REGISTER_MATCH = re.compile(r'r[0-9]+[dwb]?|[re]?[abcd]x|[abcd][lh]|[re]?[sd]il?', flags=re.IGNORECASE)
 RE_REMOVE_REGISTER_NUMBER = re.compile(r'\(?[0-9]+\)?')
 
 # Handling memory size information
-MEM_SIZE_RE = re.compile(r'(?:v([0-9]+))?([a-z]+)')
+MEM_SIZE_RE = re.compile(r'(?:v([0-9]+))?([a-z]+)(?:{space}ptr)?'.format(space=RE_SPACING), flags=re.IGNORECASE)
 
 
 def x86_clean_nop(state):
@@ -41,7 +41,7 @@ def x86_replace_general_register(self, state):
     Returns:
         str: normalized name of register
     """
-    return (GENERAL_REGISTER_STR + str(X86_REGISTER_SIZES[state.token])) if RE_GENERAL_REGISTER_MATCH.fullmatch(state.token) is not None \
+    return (GENERAL_REGISTER_STR + str(X86_REGISTER_SIZES[state.token.lower()])) if RE_GENERAL_REGISTER_MATCH.fullmatch(state.token) is not None \
         else RE_REMOVE_REGISTER_NUMBER.sub('', state.token)
 
 
@@ -55,5 +55,5 @@ def x86_memsize_value(self, state):
         str: normalized memory size string
     """
     vsize, mem_str = MEM_SIZE_RE.fullmatch(state.token).groups()
-    mem_size = X86_MEMORY_SIZES[mem_str] * (1 if vsize is None else int(vsize))
+    mem_size = X86_MEMORY_SIZES[mem_str.lower()] * (1 if vsize is None else int(vsize))
     return MEM_SIZE_TOKEN_STR + str(mem_size)

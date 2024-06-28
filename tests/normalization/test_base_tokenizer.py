@@ -562,23 +562,29 @@ def _equality_fake_func2(state):
     return None
 _equality_var = _equality_fake_func
 _EQUALITY_TEST_TOKENIZERS = [
-    ({}, 'a'),
-    ({}, 'a'),
-    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, 'b'),
-    ({'case_sensitive': True}, 'c'), 
-    ({'case_sensitive': True}, 'c'), 
-    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func2}}, 'd'),
-    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func}}, 'e'),
-    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, 'e'),
+    ({}, 'a', 531367615942336365),
+    ({}, 'a', 531367615942336365),
+    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, 'b', 1122623343755692881),
+    ({'case_sensitive': True}, 'c', 158729947333387147), 
+    ({'case_sensitive': True}, 'c', 158729947333387147), 
+    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func2}}, 'd', 678502768402453625),
+    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func}}, 'd', 678502768402453625),
+    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, 'd', 678502768402453625),
 ]
-@pytest.mark.parametrize('t2,v2', _EQUALITY_TEST_TOKENIZERS)
-@pytest.mark.parametrize('t1,v1', _EQUALITY_TEST_TOKENIZERS)
-def test_example_tokenizer_eq_and_hash(t1, v1, t2, v2):
+@pytest.mark.parametrize('t2,v2,h2', _EQUALITY_TEST_TOKENIZERS)
+@pytest.mark.parametrize('t1,v1,h1', _EQUALITY_TEST_TOKENIZERS)
+def test_example_tokenizer_eq_and_hash(t1, v1, h1, t2, v2, h2, print_hashes):
     """Equality and whatnot"""
     if not isinstance(t1, BaseTokenizer):
         t1 = FakeTokenizer(**t1)
     if not isinstance(t2, BaseTokenizer):
         t2 = FakeTokenizer(**t2)
+
+    if print_hashes:
+        print(__file__, v1, hash(t1), v2, hash(t2))
+    else:  # Don't test while printing
+        assert hash(t1) == h1
+        assert hash(t2) == h2
 
     if v1 == v2:
         assert t1 == t2, "failed %s == %s" % (v1, v2)

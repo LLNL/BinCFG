@@ -49,7 +49,8 @@ RE_IMMEDIATE = r'(?:{hex}|{oct}|{bin}|{int})'.format(hex=RE_IMM_HEX, oct=RE_IMM_
 
 # Match string literals. Allows for strings starting/ending with either single or double quotes, and one can escape
 #   quotes with \' or \", and can escape the escape with \\
-RE_STRING_LITERAL = r'(?:"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\')'
+# Also matches '#str#' as a string literal
+RE_STRING_LITERAL = r'(?:"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\')|{str}'.format(str=STRING_LITERAL_STR)
 
 # Various symbol characters
 RE_PLUS_SIGN = r'\+'
@@ -117,8 +118,8 @@ def imm_to_int(token, on_err=_RAISE_ERR):
 
 
 def scan_for_token(token_list, type=None, token=None, stop_on_type=None, stop_on_token=None, ignore_type=None, ignore_token=None, 
-                   stop_unmatched=False, match_re=False, start=0, increment=1, wrap=True, max_matches=1, ret_list=False, 
-                   ret='index', on_no_match=None):
+                   stop_unmatched=False, match_re=False, ignore_re_case=True, start=0, increment=1, wrap=True, max_matches=1, 
+                   ret_list=False, ret='index', on_no_match=None):
     """Scans the given token list looking for a specific token(s) or token type(s)
 
     Will return None if no match is found.
@@ -165,6 +166,7 @@ def scan_for_token(token_list, type=None, token=None, stop_on_type=None, stop_on
         stop_unmatched (bool): if True, will stop on the first unmatched token. IE: a token that was not ignored, was not
             already stopped on, and was not considered a token to keep
         match_re (bool): if True, will assume any match values in `type` or `token` are to be considered regular expressions to fullmatch()
+        ignore_re_case (bool): if True, will pass re.IGNORECASE as a flag when making the regular expressions
         start (int): the index to start at within token_list
         increment (int): the increment to use when searching for tokens. Set to a negative number to move backwards through the list
             NOTE: if returning multiple values, they will be returned in the order they appear in the input list, regardless
@@ -196,7 +198,8 @@ def scan_for_token(token_list, type=None, token=None, stop_on_type=None, stop_on
             of the `increment` value
     """
     # Compile into RE's if using
-    _mre = lambda val: [(re.compile(t) if match_re and not isinstance(t, re.Pattern) else t) for t in 
+    re_flags = re.IGNORECASE if ignore_re_case else 0
+    _mre = lambda val: [(re.compile(t, flags=re_flags) if match_re and not isinstance(t, re.Pattern) else t) for t in 
                         ([] if val is None else [val] if isinstance(val, str) else list(val))]
     type, token, stop_on_type, stop_on_token, ignore_type, ignore_token = \
         map(_mre, [type, token, stop_on_type, stop_on_token, ignore_type, ignore_token])
@@ -340,7 +343,7 @@ def get_normalizer(normalizer):
             _check_isa(('x86', 'java'), allow_none=False)
             return bincfg.normalization.X86BaseNormalizer(tokenization_level=tl) if known_isa == 'x86' else\
                 bincfg.normalization.JavaBaseNormalizer(tokenization_level=tl)
-        elif norm_str in ['compressed', 'stats', 'comp_stats', 'compressed_stats', 'statistics']:
+        elif norm_str in ['compressed', 'stats', 'comp_stats', 'compressed_stats', 'statistics', 'compressedstats', 'compressedstatsnormalizer']:
             _check_isa(('x86', 'java'), allow_none=False)
             if known_isa == 'java':
                 raise NotImplementedError("Need to implement the java compressed stats normalizer")
@@ -355,15 +358,15 @@ def get_normalizer(normalizer):
         else:
             raise ValueError("Unknown normalization string: '%s'" % normalizer)
     
-    elif hasattr(normalizer, 'normalize') and callable(normalizer.normalize):
-        return normalizer
-    
     elif isinstance(normalizer, type):
         try:
             return get_normalizer(normalizer())
         except Exception as e:
             raise ValueError("Could not build a default normalizer from type: %s\nError Message: %s\n Traceback:%s"
                              % (repr(normalizer.__name__), e, traceback.format_exc()))
+    
+    elif hasattr(normalizer, 'normalize') and callable(normalizer.normalize):
+        return normalizer
     
     else:
         raise TypeError("Unknown normalizer type: '%s'" % normalizer)

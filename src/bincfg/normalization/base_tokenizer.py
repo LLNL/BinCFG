@@ -31,6 +31,7 @@ class Tokens:
     MEMORY_EXPRESSION = 'memory_expression'
     BRANCH_PREDICTION = 'branch_prediction'
     STRING_LITERAL = 'string_literal'
+    SEGMENT_ADDRESS = 'segment_address'
 
     MISMATCH = 'mismatch'
 
@@ -184,7 +185,8 @@ class BaseTokenizer(metaclass=ParameterSaver):
     and are inserted in the following order:
 
         1. String literals (Tokens.STRING_LITERAL) - matches strings which can start/end with matching single or double 
-           quotes, and can escape inner quotes with \\' or \\", and can escape the escape character with \\\\.
+           quotes, and can escape inner quotes with \\' or \\", and can escape the escape character with \\\\. Any extra
+           escape characters (not behind a ' or " or \\) will be left as-is.
         2. Disassembler information (Tokens.DISASSEMBLER_INFO) - matches disassembler information of the form "<...>". 
            This info must be within open/close angle brackets. It is also possible to nest angle brackets within the 
            disassembler info up to a maximum current depth of 3. IE: we can match the following:
@@ -301,7 +303,8 @@ class BaseTokenizer(metaclass=ParameterSaver):
     
     def _init_tokenizer(self):
         """Initializes the tokenizer from self.tokens"""
-        flags = (re.M|re.IGNORECASE) if not self.case_sensitive else re.M
+        flags = (re.M|re.UNICODE)
+        flags = (flags|re.IGNORECASE) if not self.case_sensitive else flags
         self.tokenizer = re.compile('|'.join([("(?P<%s>%s)" % pair) for pair in self.tokens]), flags=flags)
     
     def tokenize(self, *strings, newline_tup=_USE_DEFAULT_NT, match_instruction_address=True, **kwargs):

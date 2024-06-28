@@ -150,7 +150,10 @@ class NormalizerState:
     def set(self, **kwargs):
         """Sets the given kwargs on this object's attribute dictionary"""
         for k, v in kwargs.items():
+            if k not in dir(self):
+                raise ValueError("Cannot set key: %s" % repr(k))
             setattr(self, k, v)
+        return self
     
     def copy(self):
         """Returns a copy of this state, but doesn't copy `cfg` or `block`"""
@@ -161,6 +164,11 @@ class NormalizerState:
         ret = self.copy()
         ret.set(**kwargs)
         return ret
+
+    @property
+    def token_tuple(self):
+        """Returns (token_type, token, orig_token)"""
+        return (self.token_type, self.token, self.orig_token)
     
     def __getitem__(self, key):
         """Allows access like dictionary keys"""
@@ -248,6 +256,8 @@ class BaseNormalizer(metaclass=MetaNorm):
         3. Otherwise, if the disassembler info token starts with a string literal, this will insert that string literal
            right where it appears (and, that string literal will be handled with `self.handle_string_literal`). The inserted
            value will first be handled by the appropriate handler for Token.STRING_LITERAL token types.
+        4. Finally, if it doesn't match anything above, then it will fail silently and be ignored. If you wish to raise
+           an error when this happens instead, you can pass `raise_unk_di=True` when calling `.normalize()`
     
     The disassembler tokens themselves are always ignored by default.
 
@@ -455,8 +465,10 @@ class BaseNormalizer(metaclass=MetaNorm):
             # If this was a newline token or instruction start token, call our line handler
             if state.token_type in [Tokens.NEWLINE, Tokens.INSTRUCTION_START]:
                 self.finalize_instruction(state)
+                self.add_line_to_sentence(state)
         
         self.finalize_instruction(state)
+        self.add_line_to_sentence(state)
 
         # If we currently have no lines, then insert an empty string
         if len(state.normalized_lines) == 0:
@@ -469,18 +481,26 @@ class BaseNormalizer(metaclass=MetaNorm):
         
         return state.normalized_lines
     
-    def _handle_token(self, state, insert_token=True):
-        """Handles a single token of the given token_type. Returns the token no matter what"""
+    def _handle_token(self, state, insert_at=None, insert_token=True):
+        """Handles a single token of the given token_type. Returns the state"""
         state.token = state.handlers[state.token_type](state) if state.token_type in state.handlers \
             else None if state.token_type in [Tokens.INSTRUCTION_START] \
             else self.handle_unknown_token(state)
-            
-        # Add this (name, new_token, old_token) triplet to our list if new_token is not None
-        insert_token_tup = (state.token_type, state.token, state.orig_token)
-        if state.token is not None and insert_token:
-            state.line.append(insert_token_tup)
 
-        return insert_token_tup
+        # If we are inserting the token
+        if insert_token:
+            # If we have a location to insert at
+            if insert_at is not None:
+                if state.token is not None:
+                    state.line[insert_at] = (state.token_type, state.token, state.orig_token)
+                else:
+                    state.line = state.line[:insert_at] + state.line[insert_at + 1:]
+                
+            # Otherwise just append
+            elif state.token is not None:
+                state.line.append((state.token_type, state.token, state.orig_token))
+
+        return state
     
     def handle_opcode(self, state):
         """Handles an opcode. Defaults to returning the original token
@@ -600,14 +620,13 @@ class BaseNormalizer(metaclass=MetaNorm):
         disinfo = state.token[len(DISINFO_START):-len(DISINFO_END)]
 
         # Functions for inserting immediate values and string literals
-        def norm_str(val):
-            return '"' + val[1:-1] + '"'
         def _insert_imm(val):
             idx = scan_for_token(state.line, type=[Tokens.IMMEDIATE], stop_unmatched=True, ignore_type=[Tokens.SPACING], start=-1, increment=-1)
             if idx is not None:
-                state.line[idx] = self._handle_token(state.copy_set(token_type=Tokens.IMMEDIATE, token=val), insert_token=False)
+                state.line = self._handle_token(state.copy_set(token_type=Tokens.IMMEDIATE, token=val, orig_token=val), insert_at=idx).line
+
         def _insert_str(val):
-            state.line.append(self._handle_token(state.copy_set(token_type=Tokens.STRING_LITERAL, token=val), insert_token=False))
+            state.line = self._handle_token(state.copy_set(token_type=Tokens.STRING_LITERAL, token=val, orig_token=val)).line
 
         # Attempt to parse as a JSON object
         parsed_json = parse_disinfo_json(disinfo)
@@ -616,15 +635,14 @@ class BaseNormalizer(metaclass=MetaNorm):
 
             # If this is an immediate or a string, apply those
             if isinstance(parsed_json, int):
-                _insert_imm(parsed_json)
+                _insert_imm(str(parsed_json))
             elif isinstance(parsed_json, str):
-                _insert_str(norm_str(repr(parsed_json)))  # JSON can only handle double quotes
+                _insert_str(_norm_str('"' + parsed_json + '"'))
             
             # If this is a dictionary with special keys, handle those
             elif isinstance(parsed_json, dict):
-
                 if 'immediate' in parsed_json:
-                    _insert_imm(parsed_json['immediate'])
+                    _insert_imm(str(parsed_json['immediate']))
                 elif 'insert' in parsed_json:
                     json_insert = parsed_json['insert']
 
@@ -632,35 +650,33 @@ class BaseNormalizer(metaclass=MetaNorm):
                         if isinstance(parsed_json['insert_type'], bool) and not parsed_json['insert_type']:
                             # Leave as-is if a string, otherwise convert to string with repr()
                             ins_str = json_insert if isinstance(json_insert, str) else repr(json_insert)
-                            insert = (Tokens.STRING_LITERAL, json_insert, json_insert)
+                            state.line.append((Tokens.STRING_LITERAL, json_insert, json_insert))
                         else:
                             # Insert string quotes if this is a string literal type, otherwise call repr() to convert to string
-                            ins_str = norm_str(repr(json_insert)) if parsed_json['insert_type'] in [Tokens.STRING_LITERAL] else repr(json_insert)
-                            insert = self._handle_token(state.copy_set(token=ins_str, token_type=parsed_json['insert_type'], old_token=ins_str))
+                            ins_str = _norm_str('"' + json_insert + '"') if parsed_json['insert_type'] in [Tokens.STRING_LITERAL] else repr(json_insert)
+                            self._handle_token(state.set(token=ins_str, token_type=parsed_json['insert_type'], orig_token=ins_str))
                     else:
                         # Leave as-is if a string, otherwise convert to string with repr()
                         ins_str = json_insert if isinstance(json_insert, str) else repr(json_insert)
-                        try:
-                            tokens = self.tokenize(ins_str, newline_tup=None, match_instruction_address=False, **state['kwargs'])
-                            if len(tokens) != 1:
-                                raise ValueError
-                            insert = self._handle_token(state.copy_set(token=tokens[0][1], token_type=tokens[0][0], old_token=ins_str))
-                        except:
-                            insert = (Tokens.STRING_LITERAL, ins_str, ins_str)
-                    
-                    if insert[1] is not None:
-                        state.line.append(insert)
+                        tokens = self.tokenize(ins_str, newline_tup=None, match_instruction_address=False, **state['kwargs'])
+                        if len(tokens) != 1:
+                            raise ValueError("Could not tokenize insert value: %s" % ins_str)
+                        self._handle_token(state.set(token=tokens[0][1], token_type=tokens[0][0], orig_token=ins_str))
 
         else:
             # Check for an immediate value at the start
-            mo = RE_DISINFO_IMM.fullmatch(disinfo)
-            if mo is not None:
-                _insert_imm(mo.groups()[0])
+            mo_imm = RE_DISINFO_IMM.fullmatch(disinfo)
+            mo_str = RE_DISINFO_STR.fullmatch(disinfo)
+            if mo_imm is not None:
+                _insert_imm(mo_imm.groups()[0])
 
-            # Finally, check for a string literal
-            mo = RE_DISINFO_STR.fullmatch(disinfo)
-            if mo is not None:
-                _insert_str(norm_str(mo.groups()[0]))
+            # Check for a string literal
+            elif mo_str is not None:
+                _insert_str(_norm_str(mo_str.groups()[0]))
+            
+            # Finally, check if we should raise an error due to unknown disassembler info
+            elif "raise_unk_di" in state.kwargs and state.kwargs['raise_unk_di']:
+                raise ValueError("Unknown disassembler info: %s" % repr(disinfo))
             
         return None
     
@@ -672,8 +688,7 @@ class BaseNormalizer(metaclass=MetaNorm):
         Args:
             state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
         """
-        return ('"' + state.token.replace('"', "\\\"")[1:-1] + '"') if state.token.startswith("'") and state.token.endswith("'") \
-            else ('"' + state.token + '"') if not state.token.startswith('"') else state.token
+        return _norm_str(state.token)
 
     def handle_mismatch(self, state):
         """What to do when the normalizaion method finds a token mismatch (in case they were ignored in the tokenizer)
@@ -709,8 +724,6 @@ class BaseNormalizer(metaclass=MetaNorm):
         If overridden, should at the very least:
 
             - call all the registered opcode handlers for each known opcode token (while updating token_type/token/token_idx)
-            - stringify the line
-            - add new line to state.normalized_lines and clear state.line
         
         By default, each opcode handler is expected to take in the current state, and return either the integer index
         of the next token that should be checked (IE: "we have handled all tokens up to but not including this index"),
@@ -743,8 +756,9 @@ class BaseNormalizer(metaclass=MetaNorm):
                         break
             
             idx += 1
-        
-        # Stringify this line, add it to our normalized lines, and clear state.line
+    
+    def add_line_to_sentence(self, state):
+        """Stringifies the current line, then adds it to the normalized lines and clears state.line"""
         sl = self.stringify_line(state)
         state.normalized_lines += [sl] if isinstance(sl, str) else list(sl)
         state.line.clear()
@@ -767,13 +781,15 @@ class BaseNormalizer(metaclass=MetaNorm):
     def stringify_line(self, state):
         """Converts the current line into a list of final normalized string tokens and returns that list
 
+        Also normalizes the case, converting all tokens (except those in strings) to lowercase
+
         Args:
             state (NormalizerState): dictionary of current state information. See ``bincfg.normalization.base_normalizer.NormalizerState``
             
         Returns:
             List[str]: a list of tokens to add to state.normalized_lines
         """
-        tokens = [t for n, t, _ in state.line]
+        tokens = [_norm_case(t, n) for n, t, _ in state.line]
         if len(tokens) == 0:
             return []
         
@@ -821,8 +837,8 @@ class BaseNormalizer(metaclass=MetaNorm):
         Defaults to checking if class types, tokenizers, and tokenization_level are the same. Future children should 
             also check any kwargs.
         """
-        return type(self) == type(other) and eq_obj([r for r, _ in self.opcode_handlers], [r for r, _ in other.opcode_handlers]) \
-            and all(eq_obj(self, other, selector=s) for s in ['tokenizer', 'tokenization_level', 'anonymize_tokens', 'renormalizable', 'token_sep', 'token_handlers'])
+        return type(self) == type(other) and all(eq_obj(self, other, selector=s) for s in 
+            ['tokenizer', 'tokenization_level', 'anonymize_tokens', 'renormalizable', 'token_sep', 'token_handlers', 'opcode_handlers'])
     
     def __hash__(self):
         return hash_obj([type(self).__name__, [r for r, _ in self.opcode_handlers], self.tokenizer, self.tokenization_level.name,
@@ -854,6 +870,65 @@ class BaseNormalizer(metaclass=MetaNorm):
         return self.__class__.__name__.lower() + (('_op' if self.tokenization_level == TokenizationLevel.OPCODE else '_inst') if self.tokenization_level != self.DEFAULT_TOKENIZATION_LEVEL else '')
 
 
+def _norm_case(token, token_type):
+    """Converts token to lowercase, unless it is a string token_type"""
+    return token.lower() if token_type not in [Tokens.STRING_LITERAL] else token
+
+
+def _norm_str(token):
+    """Normalizes a string token
+
+    `token` should be the string token, including the starting/ending quotes (can be either single or double quotes,
+    but must be matching).
+
+    Strings are normalized for readability. This can handle unicode, escaped characters, etc. Strings are treated
+    how python would treat them (regarding how to escape characters, etc.).
+
+    The general workflow is:
+
+        1. Encode the string into 'utf-8' bytes, then convert to a string. This forces python to convert any weird
+           characters (tabs, newlines, unicode, extra quotes, ...) into escaped format.
+        2. Remove the starting quote + 'b' and ending quote to get the original string in this new format
+        3. Un-escape any doubly escaped '\\' characters that were escaped when converting into 'utf-8'
+        4. Replace any escaped single quotes with plain single quotes, but only under certain conditions, see the note below.
+        5. Remove the old starting/ending quotes
+        6. Go through the string finding any un-escaped double quotes and escape them
+        7. Replace any escaped single quotes with plain single quotes since we only use double quotes as outer quotes
+    
+    NOTE: As far as I can tell, calling str() on the encoded string functions much like calling repr() on a string. It will
+    default to wrapping the string in single quotes, UNLESS that string contains single quotes in which case it will
+    wrap in double quotes so as to not have to escape the single quotes, UNLESS-UNLESS the string also contains
+    double quotes in which case it will wrap in single quotes and escape all inner single quotes. So, if the string
+    contains both single and double quotes, we'll have to un-escape any single quotes within the string to keep
+    everything normalized as expected.
+
+    This should be able to normalize any weird combinations of characters/spacing/unicode/etc., and force strings to
+    start/end with double quotes.
+    """
+    encoded = str(token.encode('utf-8'))[2:-1].replace('\\\\', '\\')
+    
+    # Remove extra escapes possibly added
+    if '"' in encoded and "'" in encoded:
+        encoded = encoded.replace("\\'", "'")
+    
+    # Check escaped characters to find un-escaped double quotes, and escape them
+    escaped = ""
+    last_escape = False
+    for c in encoded[1:-1]:
+        # If this is a double quote that was not escaped, add in an escape character
+        if c == '"' and not last_escape:
+            escaped += '\\'
+        
+        # If the last character was an escape character, turn off last_escape. Otherwise if this 
+        #   is an escape character, turn on last_escape
+        last_escape = False if last_escape else (c == '\\')
+
+        # Add in this character always
+        escaped += c
+
+    return '"' + escaped.replace("\\'", "'") + '"'
+
+
 # Libc function names gathered from: https://www.gnu.org/software/libc/manual/html_node/Function-Index.html
 # Code used to generate these from raw copy/pasted website data:
 """
@@ -870,5 +945,5 @@ with open('./libc_func_names.txt', 'w') as f:
     for n in sorted(list(libc_funcs)):
         f.write(n + '\n')
 """
-with open(os.path.join(os.path.dirname(__file__), "libc_func_names.txt"), 'r') as f:
-    LIBC_FUNCTION_NAMES = set([n.replace('\n', '') for n in f.readlines() if not re.fullmatch(r'[ \t\n]*', n)])
+from .libc_func_names import FUNC_NAMES
+LIBC_FUNCTION_NAMES = set([n.replace('\n', '') for n in FUNC_NAMES.split('\n') if not re.fullmatch(r'[ \t\n]*', n)])

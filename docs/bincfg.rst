@@ -8,7 +8,6 @@ Subpackages
    :maxdepth: 4
 
    bincfg.cfg
-   bincfg.labeling
    bincfg.normalization
    bincfg.utils
 

@@ -20,7 +20,7 @@ def check_builtins(func):
 def test_construct_cfg_func(args):
     """Can construct correctly"""
     parent_cfg, address, name, blocks, is_extern_func, metadata = args
-    func = CFGFunction(parent_cfg=parent_cfg, address=address, name=name, blocks=blocks, is_extern_func=is_extern_func, metadata=metadata)
+    func = CFGFunction(parent_cfg=parent_cfg, address=address, name=name, blocks=blocks, is_extern_function=is_extern_func, metadata=metadata)
 
     assert func.parent_cfg is parent_cfg
     assert isinstance(func.address, int)
@@ -92,10 +92,15 @@ def test_empty_func_builtins():
 
 
 @pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
-def test_manual_cfg_functions(cfg_func):
+def test_manual_cfg_functions(cfg_func, print_hashes):
     """Tests the functions within the manual cfg building functions"""
     res = cfg_func(build_level='function')
     funcs, expected = res['functions'], res['expected']
+
+    if print_hashes:
+        print(__file__+'-'+res['file'], {f.address: hash(f) for f in funcs.values()})
+    else:
+        assert {f.address: hash(f) for f in funcs.values()} == expected['function_hashes']
 
     assert len(funcs) == len(expected['sorted_func_order']) == expected['num_functions']
 

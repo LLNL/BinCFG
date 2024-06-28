@@ -1,4 +1,4 @@
-*pthread_getspecific
+FUNC_NAMES = """*pthread_getspecific
 *sbrk
 *sem_open
 CPU_CLR
@@ -1716,4 +1716,4 @@ yn
 ynf
 ynfN
 ynfNx
-ynl
+ynl"""

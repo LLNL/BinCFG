@@ -6,7 +6,7 @@ lines within those CFGs, and convert that data into ML-ready formats.
 
 ## Documentation
 
-We are currently working on getting documentation hosted on ReadTheDocs, stay tuned!
+Our documentation can be found here: https://bincfg.readthedocs.io/en/latest/#
 
 ## Installation
 

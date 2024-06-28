@@ -13,11 +13,12 @@ class FakeCFG:
 
 class FakeCFGFunction:
     """Fake version of a CFGFunction"""
-    def __init__(self, parent_cfg, address, name, is_extern_func):
+    def __init__(self, parent_cfg, address, name, is_extern_function, metadata):
         self.parent_cfg = parent_cfg
         self.address = address
         self.name = name
-        self.is_extern_func = is_extern_func
+        self.is_extern_function = is_extern_function
+        self.metadata = metadata
     
     def __str__(self):
         return "Func-%d" % self.address

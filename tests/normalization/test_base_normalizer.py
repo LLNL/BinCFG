@@ -76,7 +76,7 @@ def test_init_normalizer(pickled):
     
     n = _pickle(n, pickled)
 
-    assert n.normalize("add 10") == [INSTRUCTION_START_TOKEN, 'addHANDLED', '10']
+    assert n.normalize("add 10") == [INSTRUCTION_START_TOKEN, 'addhandled', '10']
 
 
 def _token_mismatch_override_handle_functions(state):
@@ -96,7 +96,7 @@ def test_override_handle_functions(pickled):
     n = _pickle(n, pickled)
 
     assert n.normalize("1234: add10+*[]:eax-0x33{split}\n<disinfo>\"str\\\"ing\"&()".format(split=SPLIT_IMMEDIATE_TOKEN)) == [
-        "<inst_addr> <spacing> OPCODE <plus_sign> <times_sign> <open_bracket> <close_bracket> <colon> <register> <immediate> <newline>",
+        "<inst_addr> <spacing> opcode <plus_sign> <times_sign> <open_bracket> <close_bracket> <colon> <register> <immediate> <newline>",
         "<disassembler_info> <string_literal> <mismatch> <fake> <newline>"
     ]
 
@@ -122,7 +122,7 @@ def test_register_opcode_handlers(pickled):
     n = _pickle(n, pickled)
 
     assert n.normalize("add 10 ad call rax addddd") == [
-        "ADDTOKEN 10 ADDTOKEN call rax ADDTOKEN"
+        "addtoken 10 addtoken call rax addtoken"
     ]
 
 
@@ -233,7 +233,12 @@ def test_disassembler_info(n, pickled):
     assert n.normalize("1234: add rax, 10<{\"insert\": 17, \"insert_type\": \"disassembler_info\"}>") == ['add rax 10']
     assert n.normalize("1234: add rax, 10<{\"insert\": \"17\", \"insert_type\": \"branch_prediction\"}>") == ['add rax 10 bp']
     assert n.normalize("1234: add rax, 10<{\"insert\": \"17\", \"insert_type\": false}>") == ['add rax 10 17']
-    assert n.normalize("1234: add rax, 10<{\"insert\": \"&&&\"}>") == ['add rax 10 &&&']
+    assert n.normalize("1234: add rax, 10<{\"insert\": \"&&&\", \"insert_type\": false}>") == ['add rax 10 &&&']
+    assert n.normalize("1234: add rax, 10<{\"insert\": \"'&&&'\"}>") == ['add rax 10 "&&&"']
+
+    # Fails if it's unknown and you passed raise_unk_di=True
+    with pytest.raises(ValueError):
+        n.normalize("1234: add 1234<unknown>", raise_unk_di=True)
 
 
 def _test_hash(string):
@@ -257,7 +262,7 @@ def test_anonymize_tokens(n, pickled):
     n = _pickle(n, pickled)
 
     assert n.normalize("1234: add10+*[]:eax-0x33{split}\n<disinfo>\"str\\\"ing\"&()".format(split=SPLIT_IMMEDIATE_TOKEN)) == [
-        _test_hash("<inst_addr> <spacing> OPCODE <plus_sign> <times_sign> <open_bracket> <close_bracket> <colon> <register> <immediate> <newline>"),
+        _test_hash("<inst_addr> <spacing> opcode <plus_sign> <times_sign> <open_bracket> <close_bracket> <colon> <register> <immediate> <newline>"),
         _test_hash("<disassembler_info> <string_literal> <mismatch> <fake> <newline>")
     ]
 
@@ -266,34 +271,39 @@ def _equality_fake_func(state):
     return None
 def _equality_fake_func2(state):
     return None
+def _equality_fake_func3(state):
+    return state.token
 _equality_var = _equality_fake_func
 _EQUALITY_TEST_TOKENIZERS = [
-    ({}, {}, 'a'),
-    ({}, {}, 'a'),
-    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, {}, 'b'),
-    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, {'tokenization_level': TokenizationLevel.INSTRUCTION}, 'b'),
-    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, {'tokenization_level': TokenizationLevel.OPCODE}, 'c'),
-    ({'case_sensitive': True}, {'repl_all': True}, 'd'), 
-    ({'case_sensitive': True}, {'repl_all': True}, 'd'), 
-    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func2}}, {'anonymize_tokens': True}, 'e'),
-    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_fake_func}}, 'f'),
-    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_var}}, 'f'),
-    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_fake_func2}}, 'g'),
-    ({'case_sensitive': True}, {'repl_all': True, 'token_sep': '_'}, 'h'), 
-    ({'case_sensitive': True}, {'repl_all': True, 'token_sep': ''.join(['_'])}, 'h'), 
+    ({}, {}, 'a', 150203515121960375),
+    ({}, {}, 'a', 150203515121960375),
+    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, {}, 'b', 1882530265114452202),
+    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, {'tokenization_level': TokenizationLevel.INSTRUCTION}, 'b', 1882530265114452202),
+    ({'tokens': FakeTokenizer.DEFAULT_TOKENS + [('fakefake', 'fake')]}, {'tokenization_level': TokenizationLevel.OPCODE}, 'c', 1441071216850926297),
+    ({'case_sensitive': True}, {'repl_all': True}, 'd', 1121705704022107297), 
+    ({'case_sensitive': True}, {'repl_all': True}, 'd', 1121705704022107297), 
+    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func2}}, {'anonymize_tokens': True}, 'e', 2078370539328523636),
+    ({'token_handlers': {Tokens.OPCODE: _equality_fake_func}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_fake_func}}, 'f', 2244523516573442261),
+    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_var}}, 'f', 2244523516573442261),
+    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_fake_func2}}, 'f', 2244523516573442261),
+    ({'token_handlers': {Tokens.OPCODE: _equality_var}}, {'anonymize_tokens': True, 'token_handlers': {Tokens.OPCODE: _equality_fake_func3}}, 'g', 330360741807403499),
+    ({'case_sensitive': True}, {'repl_all': True, 'token_sep': '_'}, 'h', 129344844194678889), 
+    ({'case_sensitive': True}, {'repl_all': True, 'token_sep': ''.join(['_'])}, 'h', 129344844194678889), 
 ]
-@pytest.mark.parametrize('t2,n2,v2', _EQUALITY_TEST_TOKENIZERS)
-@pytest.mark.parametrize('t1,n1,v1', _EQUALITY_TEST_TOKENIZERS)
-def test_example_tokenizer_eq_and_hash(t1, n1, v1, t2, n2, v2):
+@pytest.mark.parametrize('t2,n2,v2,h2', _EQUALITY_TEST_TOKENIZERS)
+@pytest.mark.parametrize('t1,n1,v1,h1', _EQUALITY_TEST_TOKENIZERS)
+def test_example_tokenizer_eq_and_hash(t1, n1, v1, h1, t2, n2, v2, h2, print_hashes):
     """Equality and whatnot"""
-    if not isinstance(t1, BaseTokenizer):
-        t1 = FakeTokenizer(**t1)
-    if not isinstance(t2, BaseTokenizer):
-        t2 = FakeTokenizer(**t2)
-    if not isinstance(n1, BaseNormalizer):
-        n1 = FakeNormalizer(t1, **n1)
-    if not isinstance(n2, BaseNormalizer):
-        n2 = FakeNormalizer(t2, **n2)
+    t1 = FakeTokenizer(**t1)
+    t2 = FakeTokenizer(**t2)
+    n1 = FakeNormalizer(t1, **n1)
+    n2 = FakeNormalizer(t2, **n2)
+
+    if print_hashes:
+        print(__file__, v1, hash(n1), v2, hash(n2))
+    else:  # Don't test while printing
+        assert hash(n1) == h1
+        assert hash(n2) == h2
 
     if v1 == v2:
         assert n1 == n2, "failed norm %s == %s" % (v1, v2)
@@ -302,7 +312,7 @@ def test_example_tokenizer_eq_and_hash(t1, n1, v1, t2, n2, v2):
         assert pickle.loads(pickle.dumps(n1)) == n2
         assert pickle.loads(pickle.dumps(n2)) == n1
     else:
-        assert n1 != n2, "failed norm %s != %s" % (v1, v2)
+        assert n1 != n2, "failed norm %s != %s, %s" % (v1, v2)
         assert n2 != n1, "failed norm %s != %s" % (v1, v2)
         assert hash(n1) != hash(n2), "failed norm hash %s != %s" % (v1, v2)
         assert pickle.loads(pickle.dumps(n1)) != n2

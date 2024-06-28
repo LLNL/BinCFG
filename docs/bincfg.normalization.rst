@@ -134,7 +134,6 @@ above to different common behaviors without having to implement those functions 
 One may also set the `DEFAULT_TOKENIZATION_LEVEL` attribute on the class definition/instances to change what the default
 tokenization level behavior will be.
 
-
 Subpackages
 -----------
 
@@ -159,6 +158,14 @@ bincfg.normalization.base\_tokenizer module
 -------------------------------------------
 
 .. automodule:: bincfg.normalization.base_tokenizer
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+bincfg.normalization.multi\_normalizer module
+---------------------------------------------
+
+.. automodule:: bincfg.normalization.multi_normalizer
    :members:
    :undoc-members:
    :show-inheritance:

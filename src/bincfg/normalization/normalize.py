@@ -6,38 +6,39 @@ import copy
 import numpy as np
 from ..utils import progressbar, update_memcfg_tokens, AtomicTokenDict
 from .norm_utils import get_normalizer
+from ..utils.type_utils import *
 import bincfg
 
 
-def normalize_cfg_data(cfg_data, normalizer, inplace=False, using_tokens=None, force_renormalize=False, convert_to_mem=False, 
-    unpack_cfgs=False, progress=False):
+def normalize_cfg_data(cfg_data: 'Union[CFGInputDataType, bincfg.CFG, bincfg.MemCFG, bincfg.CFGDataset, bincfg.MemCFGDataset, Iterable]', 
+                       normalizer: 'Union[str, NormalizerType]', inplace: 'bool' = False, using_tokens: 'Optional[Union[dict[str, int], AtomicTokenDict]]' = None, 
+                       force_renormalize: 'bool' = False, convert_to_mem: 'bool' = False, conv_keep_mem_addrs: 'bool' = True, 
+                       unpack_cfgs: 'bool' = False, progress: 'bool' = False) -> 'Union[bincfg.CFG, bincfg.MemCFG, bincfg.CFGDataset, bincfg.MemCFGDataset, list, tuple]':
     """Normalizes some cfg data.
 
     Args:
-        cfg_data (Union[str, CFG, MemCFG, CFGDataset, MemCFGDataset, Iterable]): some cfg data. Can be either: str, CFG, MemCFG, 
+        cfg_data (Union[CFGInputDataType, CFG, MemCFG, CFGDataset, MemCFGDataset, Iterable]): some cfg data. Can be either: str, CFG, MemCFG, 
             CFGDataset, MemCFGDataset, or iterable of previously mentioned types. Will return the same type as that passed,
             unless that particular input was a string, in which case a CFG will be returned.
         normalizer (Union[str, Normalizer]): the normalizer to use. Can be either a ``Normalizer`` class with a 
             `.normalize()` method, or a string to use a built-in normalizer. See :func:`bincfg.normalization.get_normalizer`
             for acceptable strings.
-        inplace (bool, optional): if True, will modify data in-place instead of creating new objects. Defaults to False.
+        inplace (bool): if True, will modify data in-place instead of creating new objects. Defaults to False.
             NOTE: if `inplace=False`, and the incoming data has already been normalized with the passed `normalizer`, then
             the original cfg will be returned, NOT a copy.
-        using_tokens (TokenDictType, optional): only used for ``MemCFG``'s. If not None, then a dictionary mapping string
+        using_tokens (Optional[Union[dict[str, int], AtomicTokenDict]]): only used for ``MemCFG``'s. If not None, then a dictionary mapping string
             tokens to integer token values that will be used as any ``MemCFG``'s tokens. Defaults to None.
-        force_renormalize (bool, optional): by default, this method will only normalize cfg's whose .normalizer != to the passed
+        force_renormalize (bool): by default, this method will only normalize cfg's whose .normalizer != to the passed
             normalizer. However if `force_renormalize=True`, then all cfg's will be renormalized even if they have been
             previously normalized with the same normalizer. Defaults to False.
-        convert_to_mem (bool, optional): if True, will convert all ``CFG``'s and ``CFGDatasets`` to their memory-efficient 
+        convert_to_mem (bool): if True, will convert all ``CFG``'s and ``CFGDatasets`` to their memory-efficient 
             versions after normalizing. Defaults to False.
-        unpack_cfgs (bool, optional): by default, this method will return the same types that were passed to be normalized. 
+        conv_keep_mem_addrs (bool): if True, will pass `keep_memory_addresses=True` when converting CFG's into MemCFG's
+        unpack_cfgs (bool): by default, this method will return the same types that were passed to be normalized. 
             However if `unpack_cfgs=True`, then instead, a list of all cfgs unpacked (EG: unpacked from lists, and pulled 
             out of datasets) will be returned. Defaults to False.
             NOTE: if only a single ``CFG``/``MemCFG`` was passed, a list will still be returned of only that single element.
-        progress (bool, optional): if True, will show a progressbar for normalizations of multiple cfg's. Defaults to False.
-
-    Raises:
-        TypeError: Unknown input `cfg_data` type(s)
+        progress (bool): if True, will show a progressbar for normalizations of multiple cfg's. Defaults to False.
 
     Returns:
         Union[CFG, MemCFG, CFGDataset, MemCFGDataset, List, Tuple]: the normalized data
@@ -85,9 +86,9 @@ def normalize_cfg_data(cfg_data, normalizer, inplace=False, using_tokens=None, f
         # Check if we need to unpack cfgs, and/or convert to memcfg's
         if convert_to_mem:
             if isinstance(cfg_data, bincfg.CFG):
-                cfg_data = bincfg.MemCFG(cfg_data, using_tokens=using_tokens)
+                cfg_data = bincfg.MemCFG(cfg_data, using_tokens=using_tokens, keep_memory_addresses=conv_keep_mem_addrs)
             elif isinstance(cfg_data, bincfg.CFGDataset):
-                cfg_data = bincfg.MemCFGDataset(cfg_data, using_tokens=using_tokens)
+                cfg_data = bincfg.MemCFGDataset(cfg_data, using_tokens=using_tokens, keep_memory_addresses=conv_keep_mem_addrs)
             
             # Otherwise it is already a MemCFG/MemCFGDataset, and we need to check if we should update the tokens
             elif using_tokens is not None:
@@ -117,7 +118,7 @@ def normalize_cfg_data(cfg_data, normalizer, inplace=False, using_tokens=None, f
 
         # Convert to MemCFG if needed
         if convert_to_mem and isinstance(cfg_data, bincfg.CFG):
-            ret = bincfg.MemCFG(ret, inplace=True, using_tokens=using_tokens)
+            ret = bincfg.MemCFG(ret, inplace=True, using_tokens=using_tokens, keep_memory_addresses=conv_keep_mem_addrs)
 
     elif isinstance(cfg_data, bincfg.MemCFG):
         # Need to recompute the asm_lines, block_asm_idx, and tokens
@@ -157,7 +158,7 @@ def normalize_cfg_data(cfg_data, normalizer, inplace=False, using_tokens=None, f
 
         # Convert to MemCFGDataset if needed
         if convert_to_mem and isinstance(cfg_data, bincfg.CFGDataset):
-            ret = bincfg.MemCFGDataset(ret, normalizer=normalizer, tokens=ret.tokens)
+            ret = bincfg.MemCFGDataset(ret, normalizer=normalizer, tokens=ret.tokens, keep_memory_addresses=conv_keep_mem_addrs)
     
     else:
         raise TypeError("Got an unknown type: '%s'" % type(cfg_data).__name__)
@@ -169,7 +170,8 @@ def normalize_cfg_data(cfg_data, normalizer, inplace=False, using_tokens=None, f
     return ret
 
 
-def _unpack_cfgs(cfg_data):
+def _unpack_cfgs(cfg_data: 'Union[CFGInputDataType, bincfg.CFG, bincfg.MemCFG, bincfg.CFGDataset, bincfg.MemCFGDataset, Iterable]') \
+    -> 'tuple[list[Union[bincfg.CFG, bincfg.MemCFG]], list[tuple[int, int]]]':
     """Helper to unpack lists/tuples of cfg's/datasets's, and return their type info
 
     Will also convert strings to CFG's
@@ -179,7 +181,7 @@ def _unpack_cfgs(cfg_data):
             CFGDataset, MemCFGDataset, or iterable of previously mentioned types.
 
     Returns:
-        Tuple[List[Union[bincfg.CFG, bincfg.MemCFG]], List[Tuple[int, int]]]: a 2-tuple of `(cfgs, type_info)`, where 
+        tuple[list[Union[bincfg.CFG, bincfg.MemCFG]], list[tuple[int, int]]]: a 2-tuple of `(cfgs, type_info)`, where 
             `cfgs` is a list of CFG's/MemCFG's containing all of the cfgs that exist in cfg_data in order, and `type_info` 
             is a list of 2-tuples of (start_idx, end_idx) where: `start_idx` is the integer start index of this chunk of 
             data in the `cfgs` list, and `end_idx` is the end index of this chunk of data

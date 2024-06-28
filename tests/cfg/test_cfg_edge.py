@@ -51,6 +51,36 @@ def test_builtins():
     assert isinstance(hash(edge), int)
 
 
+def test_ordering():
+    """<, >, <=, >="""
+    blocks = {1: CFGBasicBlock(address='1'), 2: CFGBasicBlock(address='2'), 3: CFGBasicBlock(address='3')}
+
+    def assert_exact(e1, e2, t):
+        if t == '<':
+            assert e1 < e2
+            assert not e1 > e2
+            assert e1 <= e2
+            assert not e1 >= e2
+            assert e2 > e1
+        elif t == '>':
+            assert e1 > e2
+            assert not e1 < e2
+            assert e1 >= e2
+            assert not e1 <= e2
+            assert e2 < e1
+        else:
+            raise NotImplementedError
+
+    e1 = CFGEdge(blocks[1], blocks[2], 'normal')
+    e2 = CFGEdge(blocks[1], blocks[3], 'normal')
+    e3 = CFGEdge(blocks[1], blocks[2], 'function_call')
+    e4 = CFGEdge(blocks[2], blocks[1], 'normal')
+    ordering = [e1, e3, e2, e4]
+    for i in range(len(ordering) - 1):
+        assert_exact(ordering[i], ordering[i+1], '<')
+        assert_exact(ordering[i+1], ordering[i], '>')
+
+
 def test_properties():
     """Test various @property values"""
     blocks = {1: CFGBasicBlock(address='1'), 2: CFGBasicBlock(address='2'), 3: CFGBasicBlock(address='3')}
@@ -79,27 +109,35 @@ def test_properties():
     blocks[1].edges_out = set([CFGEdge(blocks[1], blocks[2], 'normal')])
     assert not list(blocks[1].edges_out)[0].is_branch
 
-def test_eq_and_hash():
+def test_eq_and_hash(print_hashes):
     """Equality and hashing are equal, uses basic block addresses to end recursion"""
     blocks = {1: CFGBasicBlock(address='1'), 2: CFGBasicBlock(address='2'), 3: CFGBasicBlock(address='3')}
     
     edges = [
-        (CFGEdge(blocks[1], blocks[2], 'normal'), 'a'),
-        (CFGEdge(blocks[1], blocks[2], 'normal'), 'a'),
+        (CFGEdge(blocks[1], blocks[2], 'normal'), 'a', 2027667576485617248),
+        (CFGEdge(blocks[1], blocks[2], 'normal'), 'a', 2027667576485617248),
 
-        (CFGEdge(blocks[1], blocks[3], 'normal'), 'b'),
-        (CFGEdge(blocks[2], blocks[2], 'normal'), 'c'),
+        (CFGEdge(blocks[1], blocks[3], 'normal'), 'b', 1022546544431398498),
+        (CFGEdge(blocks[2], blocks[2], 'normal'), 'c', 2240679812046389256),
 
-        (CFGEdge(blocks[1], blocks[2], 'function_call'), 'd'),
+        (CFGEdge(blocks[1], blocks[2], 'function_call'), 'd', 1667373662910986454),
 
-        (CFGEdge(blocks[2], blocks[1], 'normal'), 'e'),
+        (CFGEdge(blocks[2], blocks[1], 'normal'), 'e', 1326549638803203941),
 
-        (CFGEdge(blocks[1], blocks[3], EdgeType.FUNCTION_CALL), 'f'),
-        (CFGEdge(blocks[1], blocks[3], EdgeType.FUNCTION_CALL), 'f'),
+        (CFGEdge(blocks[1], blocks[3], EdgeType.FUNCTION_CALL), 'f', 1546332848037420683),
+        (CFGEdge(blocks[1], blocks[3], EdgeType.FUNCTION_CALL), 'f', 1546332848037420683),
     ]
 
-    for e1, v1 in edges:
-        for e2, v2 in edges:
+    if print_hashes:
+        for edge, v, h in edges:
+            print(__file__, v, hash(edge))
+    else:  # Don't test while printing
+        for edge, v, h in edges:
+            assert hash(edge) == h
+
+
+    for e1, v1, _ in edges:
+        for e2, v2, _ in edges:
             if v1 == v2:
                 assert e1 == e2, "e1: %s, v1: %s, e2: %s, v2: %s" % (e1, v1, e2, v2)
                 assert e2 == e1, "e1: %s, v1: %s, e2: %s, v2: %s" % (e1, v1, e2, v2)

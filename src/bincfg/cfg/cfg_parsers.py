@@ -86,13 +86,13 @@ def parse_cfg_data(cfg, data):
     # Check for a copy constructor
     elif isinstance(data, bincfg.CFG):
         cfg.add_function(*[
-            CFGFunction(address=func.address, name=func.name, is_extern_func=func._is_extern_function, blocks=[
+            CFGFunction(address=func.address, name=func.name, is_extern_function=func._is_extern_function, metadata=copy.deepcopy(func.metadata), blocks=[
                 CFGBasicBlock(
-                    address=block.address, 
-                    edges_in=[(e.from_block.address, e.to_block.address, e.edge_type) for e in block.edges_in],
+                    address=block.address,
                     edges_out=[(e.from_block.address, e.to_block.address, e.edge_type) for e in block.edges_out],
-                    labels=copy.deepcopy(block.labels),
                     asm_lines=copy.deepcopy(block.asm_lines),
+                    asm_memory_addresses=copy.deepcopy(block.asm_memory_addresses),
+                    metadata=copy.deepcopy(block.metadata),
                 ) for block in func.blocks
             ]) for func in data.functions_dict.values()
         ])
@@ -102,22 +102,16 @@ def parse_cfg_data(cfg, data):
 
         # Also copy the normalizer
         cfg.normalizer = copy.deepcopy(data.normalizer)
-        assert cfg.normalizer == data.normalizer
         return
 
     # Check for a networkx to read in
     elif get_module('networkx', raise_err=False) and isinstance(data, (sys.modules['networkx'].DiGraph)):
-        bincfg.CFG.from_networkx(data, cfg)
+        bincfg.CFG.from_networkx(data, cfg=cfg)
         return
     
     # Check for a smda report object from a disassembled file
     elif get_module('smda', raise_err=False) and isinstance(data, (sys.modules['smda'].common.SmdaReport.SmdaReport)):
         return parse_smda(data, cfg)
-    
-    # Check for a dictionary to read in
-    elif isinstance(data, dict):
-        bincfg.CFG.from_cfg_dict(data, cfg)
-        return
 
     # Otherwise, assume it is a sequence of string lines
     else:
@@ -223,7 +217,7 @@ def _parse_txt_function(cfg, func_lines, curr_blocks):
     # Create the CFGFunction() object with its parent_cfg, name (while removing quotes from rose text), and is_extern_func
     _, address, *func_name_lines = func_lines[0].split(" ")
     name = ''.join(func_name_lines)[1:-1] if func_name_lines else None
-    func = CFGFunction(parent_cfg=cfg, address=get_address(address), name=name, is_extern_func=_is_extern_func_name(name))
+    func = CFGFunction(parent_cfg=cfg, address=get_address(address), name=name, is_extern_function=_is_extern_func_name(name))
 
     # Build up every basic block
     curr_block_lines = [func_lines[1]]
@@ -275,7 +269,8 @@ def _parse_txt_block(func, block_lines, curr_blocks):
         # IMPORTANT: do this before the " edge " detection in case of string literals in rose <> info
         elif line.startswith("0x"):
             address, _, asm_line = line.partition(": ")
-            block.asm_lines.append((get_address(address), asm_line.strip()))
+            block.asm_lines.append(asm_line.strip())
+            block.asm_memory_addresses.append(get_address(address))
         
         # Currently just ignoring the 'also_owned_by' for now
         elif line[0] == 'a':
@@ -344,7 +339,7 @@ def _create_basic_block(curr_blocks, address, **kwargs):
         return None
     else:
         for k, v in kwargs.items():
-            if k in ['parent_function', 'edges_in', 'edges_out', 'asm_lines', 'labels']:
+            if k in ['parent_function', 'edges_in', 'edges_out', 'asm_lines', 'metadata', 'asm_memory_addresses']:
                 setattr(curr_blocks[address], k, v)
             else:
                 raise ValueError("Unknown basic block kwarg: %s" % repr(k))
@@ -500,7 +495,7 @@ def _parse_gv_function(cfg, name, address, nodes, edges, curr_blocks):
     Returns:
         CFGFunction: the cfg function
     """
-    func = CFGFunction(parent_cfg=cfg, address=get_address(address), name=name, is_extern_func=_is_extern_func_name(name))
+    func = CFGFunction(parent_cfg=cfg, address=get_address(address), name=name, is_extern_function=_is_extern_func_name(name))
     for address, asm_lines in nodes:
         _parse_gv_block(func, address, asm_lines, edges.get(address, []), curr_blocks)
     
@@ -520,7 +515,8 @@ def _parse_gv_block(func, address, asm_lines, node_edges, curr_blocks):
             We need this to create new basic blocks on the fly in order to make ``CFGEdge``'s work properly
     """
     # Get the CFGBasicBlock with this address
-    block = _create_basic_block(curr_blocks, address, parent_function=func, asm_lines=get_asm_from_node_label(asm_lines))
+    asm_stuff = {k: v for k, v in zip(['asm_lines', 'asm_memory_addresses'], get_asm_from_node_label(asm_lines))}
+    block = _create_basic_block(curr_blocks, address, parent_function=func, **asm_stuff)
 
     # Parse out the edges
     for edge_type, address in node_edges:
@@ -537,7 +533,7 @@ def get_asm_from_node_label(label):
         label (str): the unparsed string label
 
     Returns:
-        List[Tuple[int, str]]: a list of 2-tuples of (memory_address, asm_instruction)
+        Tuple[List[str], List[int]]: tuple of 2 lists: (asm_lines, asm_memory_addresses)
     """
     if label == '' or label is None:
         return []
@@ -546,7 +542,9 @@ def get_asm_from_node_label(label):
     ret = [('0x' + html.unescape(l.replace("??", ""))) for l in GV_SPLIT.split(label[1:-1]) if l != ""]
 
     # Split on spaces and get the first one to get the memory address, the rest are joined to be the instruction
-    return [(int(addr, 0), line.strip()) for r in ret for addr, _, line in [r.replace('\t', '').partition(' ')]]
+    lines = [line.strip() for r in ret for addr, _, line in [r.replace('\t', '').partition(' ')]]
+    addrs = [int(addr, 0) for r in ret for addr, _, line in [r.replace('\t', '').partition(' ')]]
+    return lines, addrs
 
 
 def _is_extern_func_name(name):

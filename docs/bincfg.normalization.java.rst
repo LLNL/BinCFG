@@ -1,8 +1,6 @@
 bincfg.normalization.java package
 =================================
 
-Contains tokenizers/normalizers for Java bytecode.
-
 Submodules
 ----------
 

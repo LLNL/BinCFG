@@ -4,7 +4,7 @@ Utilities for CFG/MemCFG objects and their datasets
 
 import numpy as np
 import bincfg
-from .type_utils import AddressLike
+from .type_utils import *
 from .misc_utils import get_smallest_np_dtype
 
 

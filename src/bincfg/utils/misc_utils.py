@@ -6,18 +6,25 @@ import re
 import time
 import string
 import pickle
+import dis
 import numpy as np
 from enum import Enum
 from threading import Thread
 from hashlib import sha256
 from inspect import currentframe, signature, _empty as EmptyDefaultParam
-from types import MethodType
+from types import MethodType, FunctionType
 from collections import OrderedDict
 from copy import deepcopy
 
 
 # The actual progressbar object, once it has been determined
 _IMPORT_PROGRESSBAR = None
+
+
+# Python opcodes to ignore when checking similarity of functions
+# Needed because starting python 3.11, there is a new 'RESUME' opcode that is essentially a nop, but does some stuff
+#   for CPython internal debugging/tracing
+IGNORE_OPNAMES = ['RESUME', 'NOP', 'CACHE']
 
 
 def get_smallest_np_dtype(val, signed=False):
@@ -388,19 +395,37 @@ def eq_obj(a, b, selector=None, strict_types=_EQ_DEFAULT_STRICT_TYPES, unordered
                 # Now we can return True
                 return True
             
+            elif isinstance(a, (FunctionType, MethodType)):
+                if not _eq_enforce_types((FunctionType, MethodType), a, b, raise_err, message='Functions must be same type to compare'):
+                    return False
+                
+                # NOTE: don't do a '==' check here cause in earlier python versions (EG: 3.7), it causes an infinite
+                #   recursion. For some reason, the '==' check also checks if the outer object a method is a part of
+                #   is also equal, but only on older python versions. On 3.9, it works just fine
+
+                da = _get_function_bytecode(a)
+                db = _get_function_bytecode(b)
+                
+                try:
+                    return eq_obj(da, db, selector=None, strict_types=strict_types, unordered=unordered, raise_err=raise_err)
+                except EqualityError:  # If we get an equality error, then raise_err must be true
+                    raise EqualityError(a, b, message="Functions contain different bytecode:\nA: %s\nB: %s" % (da, db))
+                except Exception as e:
+                    raise EqualityCheckingError("Could not determine equality between functions\nFor Reason: %s" % str(e))
+            
             # Otherwise, use the default equality measure
             else:
                 try:
                     return _eq_check(a == b, a, b, raise_err, message='Using built-in __eq__ equality measure')
                 except EqualityError:  # If we get an equality error, then raise_err must be true
                     raise EqualityError(a, b, message="Values were not equal using built-in __eq__ method")
-                except Exception:
-                    raise EqualityCheckingError("Could not determine equality between dictionary values using built-in __eq__ method")
+                except Exception as e:
+                    raise EqualityCheckingError("Could not determine equality between dictionary values using built-in __eq__ method\nFor Reason: %s" % str(e))
         
         except EqualityError:
             raise
-        except Exception:
-            raise EqualityCheckingError("Could not determine equality between objects\na: %s\nb: %s" % (_limit_str(a), _limit_str(b)))
+        except Exception as e:
+            raise EqualityCheckingError("Could not determine equality between objects\na: %s\nb: %s\nFor reason: %s" % (_limit_str(a), _limit_str(b), str(e)))
 
 
 def _check_with_conversion(a, type_a, b, type_b, unordered, raise_err, strict_types=False):
@@ -458,6 +483,21 @@ def _eq_check(checked, a, b, raise_err, message=None):
             raise EqualityError(a, b, message)
         return False
     return True
+
+
+def _get_function_bytecode(func):
+    """Returns a list of (OPNAME, ARG) tuples, normalized as much as I care to"""
+    bytecode = [(inst.opname, inst.arg) for inst in dis.Bytecode(func) if inst.opname not in IGNORE_OPNAMES]
+
+    # This is really just so our tests pass in 3.12...
+    ret = []
+    for opname, arg in bytecode:
+        if opname == 'RETURN_CONST':
+            ret += [('LOAD_CONST', arg), ('RETURN_VALUE', None)]
+        else:
+            ret.append((opname, arg))
+    
+    return ret
 
 
 class _TimeoutFuncThread(Thread):
@@ -574,6 +614,8 @@ def hash_obj(obj, return_int=False):
         string += '(' + type(obj).__name__ + ') ' + hash_obj(obj.pattern)
     elif isinstance(obj, _DictKeysType):
         string += '(' + type(obj).__name__ + ') ' + hash_obj(list(obj))
+    elif isinstance(obj, (MethodType, FunctionType)):
+        string += '(' + type(obj).__name__ + ') ' + repr(_get_function_bytecode(obj))
     else:
         string += str(hash(obj))
     
@@ -1174,41 +1216,6 @@ def split_list_by_sizes(l, sizes, eps=1e-8):
     # Now sizes should contain the number of elements to get for each list. Do a cumsum and gather all indices
     sums = np.concatenate(([0], np.cumsum(sizes)))
     return [l[sums[i]:sums[i+1]] for i in range(len(sizes))]
-
-
-# This fixes a very dumb, stupid, idiotic, and dumb problem that caused me so much hassle for no reason: ipython overrides
-#   the default exception handler in python so that it can print exceptions without them crashing the kernel every time.
-#   That makes sense, however they also take any error strings and change them, converting anything inside <> into their
-#   html (i think?) representation. Even this isn't so bad, but if you put anything that can't be parsed correctly inside
-#   those <> tags, it will fail silently and remove the entire tag. Meaning, if you have an error occur while, oh I don't
-#   know, testing/debugging your tokenizer that handles rose output. It will say the parsing failed on the string:
-#       "0x00402ccc: mov    rax, qword ds:[rip + 0x000000000025230d]"
-#   when it didn't. And so you spend many hours of your life trying to figure out why it's not working on that string
-#   when the ~actual~ string it failed on was:
-#       "0x00402ccc: mov    rax, qword ds:[rip + 0x000000000025230d<absolute=0x0000000000654fe0>]"
-#   but the exception handler just ate up that extra rose information in the <> tags and didn't even have the decency
-#   to mention it.
-#   This overrides the ipython exception handler (if we are using ipython) and replaces all "<" with "<<aa>". "aa" is
-#   not a known html tag, and so it fails silently eating only the "<aa>" section, while leaving the rest of the original
-#   <> tag intact. This is the best/easiest way I could think of that would keep the normal notebook exception printing
-#   (which I otherwise like), and stop it from destroying my exception messages that I worked so hard on
-#   This seems to work on any weird mashing combination of '<'s and other characters I tested, so it's good enough for me
-#
-# GREAT, ANOTHER PROBLEM: doing this removes the full stack trace that will happen when one exception is caught but
-#   another is raised (IE: the whole 'During handling of the above exception, another exception occurred' thing). I'm
-#   going to have to figure out how to fix this, but for now, I'm gonna turn this off.
-_OVERRIDE_EXC_HANDLER = True
-if _OVERRIDE_EXC_HANDLER:
-    try:
-        def _custom_exc(shell, etype, evalue, tb, tb_offset=None):
-            shell.showtraceback((etype, str(evalue).replace('<', "<<aa>"), tb), tb_offset=tb_offset)
-
-        # Done this way to remove a yellow squiggly
-        import __main__
-        getattr(__main__, 'get_ipython')().set_custom_exc((Exception, ), _custom_exc)
-
-    except (NameError, AttributeError):
-        pass
 
 
 class _tqdm_like_iter:
