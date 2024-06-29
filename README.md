@@ -1,7 +1,9 @@
 # BinCFG
 
+[![PyPI](https://img.shields.io/pypi/v/bincfg)](https://pypi.org/project/bincfg/)
+[![Supported Python versions](https://img.shields.io/pypi/pyversions/bincfg.svg)](https://pypi.org/project/bincfg/)
+[![Documentation status](https://readthedocs.org/projects/bincfg/badge/?version=latest)](https://bincfg.readthedocs.io/en/latest/?badge=latest)
 ![Tests](https://github.com/LLNL/BinCFG/actions/workflows/tests.yml/badge.svg)
-![versions](https://img.shields.io/pypi/pyversions/bincfg.svg)
 
 A Python tool designed to parse binary analyzer outputs to produce call flow graphs (CFG), tokenize and normalize the assembly
 lines within those CFGs, and convert that data into ML-ready formats.
