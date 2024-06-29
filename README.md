@@ -1,5 +1,6 @@
 # BinCFG
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![PyPI](https://img.shields.io/pypi/v/bincfg)](https://pypi.org/project/bincfg/)
 [![Supported Python versions](https://img.shields.io/pypi/pyversions/bincfg.svg)](https://pypi.org/project/bincfg/)
 [![Documentation status](https://readthedocs.org/projects/bincfg/badge/?version=latest)](https://bincfg.readthedocs.io/en/latest/?badge=latest)
