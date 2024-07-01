@@ -21,3 +21,6 @@ You can install BinCFG with pip:
 ```sh
 pip install bincfg
 ```
+
+# Release
+LLNL-CODE-837816
