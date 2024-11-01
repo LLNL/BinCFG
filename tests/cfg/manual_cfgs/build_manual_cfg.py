@@ -8,13 +8,11 @@ from ..test_normalize_cfg import ARCH_NORMS
 FUNC_EDGE_TYPES = [FakeEdgeType.FUNCTION_CALL, EdgeType.FUNCTION_CALL]
 
 
-def build_expected_dict(cfg_res, arch):
+def build_expected_dict(cfg_res, arch, tab_space='    '):
     """Makes the 'expected' dictionary values. Returns the string to copy/paste into the test file
     
     Args:
-        cfg_res (dict): should be a dictionary containing the keys 'blocks' and 'functions', which should be list of 
-            basic blocks and functions respectively. They don't have to be actual CFG* objects (and probably shouldn't 
-            to reduce bugs), they just have to have similar attributes (like using the fake_classes)
+        cfg_res (dict): the result of a call to a manual_cfg function with build_level='cfg'
         arch (str): the expected architecture of these blocks/functions
     """
 
@@ -53,7 +51,10 @@ def build_expected_dict(cfg_res, arch):
         'function_hashes': {f.address: hash(f) for f in cfg_res['functions'].values()},
         'block_hashes': {b.address: hash(b) for b in cfg_res['blocks'].values()},
         'cfg_hash': hash(cfg_res['cfg']),
-        'memcfg_hashes': {k: hash(MemCFG(cfg_res['cfg'], normalizer=n)) for k, n in [(k+'-'+tl, nc(tokenization_level=tl, **nk)) for k, (nc, nk) in ARCH_NORMS[cfg_res['cfg'].architecture].items() for tl in ['op', 'inst']]}, 
+        'memcfg_hashes': {k: hash(MemCFG(cfg_res['cfg'], normalizer=n)) for k, n in [(k+'-'+tl, nc(tokenization_level=tl, **nk)) for k, (nc, nk) in ARCH_NORMS[cfg_res['cfg'].architecture].items() for tl in ['op', 'inst']]},
+        'metadata': cfg_res['cfg'].metadata,
+        'block_metadatas': {b.address: b.metadata for b in cfg_res['blocks'].values()},
+        'function_metadatas': {f.address: f.metadata for f in cfg_res['functions'].values()},
         'asm_counts_per_block': {
             k: dict(Counter(b.asm_lines)) for k, b in cfg_res['blocks'].items()
         },
@@ -65,10 +66,10 @@ def build_expected_dict(cfg_res, arch):
 
     def v_str(k, v):
         if k in ['asm_counts_per_function']:
-            return '{\n\t\t%s\n\t}' % '\n\t\t'.join(['%s: %s,' % (repr(k), '{\n\t\t\t%s\n\t\t}' % '\n\t\t\t'.join(['%s: %s,' % (repr(k), repr(v2)) for k, v2 in v1.items()])) for k, v1 in v.items()])
+            return '{\n        %s\n    }' % '\n        '.join(['%s: %s,' % (repr(k), '{\n            %s\n        }' % '\n            '.join(['%s: %s,' % (repr(k), repr(v2)) for k, v2 in v1.items()])) for k, v1 in v.items()])
         elif k in ['asm_counts_per_block', 'asm_counts']:
-            return '{\n\t\t%s\n\t}' % '\n\t\t'.join(['%s: %s,' % (repr(k), repr(v)) for k, v in v.items()])
+            return '{\n        %s\n    }' % '\n        '.join(['%s: %s,' % (repr(k), repr(v)) for k, v in v.items()])
         return repr(v)
-    print_str = 'expected = {\n\t%s\n}' % '\n\t'.join(['%s: %s,' % (repr(k), v_str(k, v)) for k, v in expected.items()])
+    print_str = 'expected = {\n    %s\n}' % '\n    '.join(['%s: %s,' % (repr(k), v_str(k, v)) for k, v in expected.items()])
 
-    return print_str
+    return tab_space + print_str.replace('\n', '\n' + tab_space)

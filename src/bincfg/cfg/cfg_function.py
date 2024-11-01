@@ -7,7 +7,7 @@ from ..utils.type_utils import *
 
 
 if IN_PYTHON_TYPING_VERSION:
-    CFGFunctionPickledState = Tuple[int, str, Tuple[CFGBasicBlock, ...], bool]
+    CFGFunctionPickledState = Tuple[int, str, Tuple[CFGBasicBlock, ...], bool, dict]
     """The pickled state of a function"""
 
 
@@ -115,8 +115,9 @@ class CFGFunction:
     def called_by(self) -> 'list[CFGBasicBlock]':
         """A list of ``CFGBasicBlock``'s that call this function
         
-        Specifically, the list of all ``CFGBasicBlock`` objects in this function's `.parent_cfg` CFG object that call 
-        this function. If this ``CFGFunction`` has no parent, then the empty list will be returned.
+        Specifically, the list of all ``CFGBasicBlock`` objects in this function's `.parent_cfg` CFG object that have an
+        outgoing function_call edge to any block in this function. If this ``CFGFunction`` has no parent, then the empty
+        list will be returned.
         
         NOTE: this is computed dynamically each call (as ``CFG`` objects are mutable), so it may be useful to compute it
         once per function and save it if needed
@@ -124,7 +125,7 @@ class CFGFunction:
         if self.parent_cfg is None:
             return list()
 
-        return [block for block in self.parent_cfg.blocks if block.calls(self)]
+        return [block for block in self.parent_cfg.blocks if any(block.calls(b) for b in self.blocks)]
     
     def __str__(self) -> 'str':
         un_funcs = set([self.parent_cfg.get_block(b.address).parent_function.address for b in self.called_by])
@@ -174,10 +175,10 @@ class CFGFunction:
     
     def _get_pickle_state(self) -> 'CFGFunctionPickledState':
         """Returns info of this CFGFunction as a tuple"""
-        return (self.address, self.name, tuple(b._get_pickle_state() for b in self.blocks), self.is_extern_function)
+        return (self.address, self.name, tuple(b._get_pickle_state() for b in self.blocks), self.is_extern_function, self.metadata)
 
     def _set_pickle_state(self, state: 'CFGFunctionPickledState'):
         """Sets state from _get_pickle_state"""
-        self.address, self.name, blocks, self._is_extern_function = state
+        self.address, self.name, blocks, self._is_extern_function, self.metadata = state
         self.blocks = [CFGBasicBlock(parent_function=self)._set_pickle_state(b) for b in blocks]
         return self

@@ -1,0 +1,2 @@
+Contains code I used to check outputs from disassemblers to make sure they match what I know of different architectures.
+Not currently used in any testing, but left here in case I wish to use it in the future.

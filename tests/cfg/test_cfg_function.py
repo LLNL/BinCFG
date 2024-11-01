@@ -118,6 +118,8 @@ def test_manual_cfg_functions(cfg_func, print_hashes):
         assert func.function_entry_block.address == expected['function_entry_block'][func.address]
         assert func.function_entry_block == res['blocks'][expected['function_entry_block'][func.address]]
 
+        assert func.metadata == expected['function_metadatas'][func.address]
+
         assert set(b.address for b in func.called_by) == expected['called_by'][func.address]
 
         counts = dict(func.asm_counts)

@@ -1,9 +1,7 @@
 import numpy as np
-import pickle
-import traceback
 from .cfg_dataset import CFG, CFGDataset
 from .mem_cfg import MemCFG
-from ..utils import check_for_normalizer, isinstance_with_iterables, eq_obj, hash_obj, AtomicTokenDict
+from ..utils import check_for_normalizer, isinstance_with_iterables, eq_obj, hash_obj, save_dataset, load_dataset
 from ..normalization import get_normalizer, normalize_cfg_data
 
 
@@ -47,7 +45,6 @@ class MemCFGDataset:
         self.tokens = {} if using_tokens is None else using_tokens
         self.normalizer = get_normalizer(normalizer) if normalizer is not None else None
         self.metadata = {} if metadata is None else metadata.copy()
-        self._curr_cfg_memory_usage = 0
 
         if cfg_data is not None:
             self.add_data(cfg_data, **add_data_kwargs)
@@ -143,36 +140,37 @@ class MemCFGDataset:
     def num_functions(self):
         return sum(cfg.num_functions for cfg in self.cfgs)
 
-    def save(self, path, freeze_tokens=True):
-        """Saves this MemCFGDataset to path
+    def save(self, path, format='default', freeze_tokens=True, add_parquet_metadata=True):
+        """Saves this MemCFGDataset to the given path
         
         Args:
             path (str): the filepath to save to
+            format (str): the file format to save to. Available formats:
+
+                - 'pickle': saves into a pickle file
+                - 'parquet': saves data as a parquet file. This uses much less space when handling a lot of memcfg's
+                  due to parquet's great compression scheme. Requires the `pyarrow` library to use
+                - 'default': uses the default file format. Defaults to 'parquet' if the `pyarrow` library is installed,
+                  otherwise will use the 'pickle' format
+            
             freeze_tokens (bool): whether or not to 'freeze' the tokens in this MemCFGDataset. 'freezing' the tokens
                 just means that, if an AtomicTokenDict is the current token dictionary for this MemCFGDataset, then
                 its current data will be saved in the pickle file as a normal dict. This is useful for loading this
                 data later so that the loading does not depend on being able to access the files for the AtomicTokenDict.
                 Default: True. If the token dictionary is already a dict, then this has no effect
+            add_parquet_metadata (bool): if True, and you are saving with the 'parquet' file format, then this will
+                attempt to pull out any metadata columns from MemCFG's and add those columns into the output parquet file.
+                Ignored if not using the 'parquet' file format
         """
-        old_tokens = self.tokens
-        self.tokens = self.tokens.data if isinstance(self.tokens, AtomicTokenDict) and freeze_tokens else self.tokens
-        with open(path, 'wb') as f:
-            pickle.dump(self, f)
-        self.tokens = old_tokens
-    
-    def dumps(self):
-        """Returns this object pickled with pickle.dumps()"""
-        return pickle.dumps(self)
+        save_dataset(self, path=path, format=format, freeze_tokens=freeze_tokens, add_parquet_metadata=add_parquet_metadata)
     
     @classmethod
     def load(cls, path):
-        """Loads this MemCFGDataset from path"""
-        try:
-            with open(path, 'rb') as f:
-                return pickle.load(f)
-        except Exception as e:
-            raise ValueError("Error reading pickle file: %s. Reason:\n%s: %s\nTraceback: %s" 
-                             % (repr(path), type(e).__name__, e, traceback.format_exc()))
+        """Loads a MemCFGDataset from the given path"""
+        ret = load_dataset(path=path)
+
+        if not isinstance(ret, cls):
+            raise TypeError("Loaded dataset was not of type %s, type: %s" % (repr(type(cls).__name__), repr(type(ret).__name__)))
     
     def __getstate__(self):
         """State for pickling"""
@@ -239,3 +237,4 @@ def _get_stats(stat_names, counts):
         str: the nicely formatted set of statistics for the MemCFGDataset
     """
     return '\n'.join([('\t' + name + ': ' + str(c)) for name, c in zip(stat_names, counts)])
+

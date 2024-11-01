@@ -52,7 +52,7 @@ def replace_immediate(*args, include_negative=False):
 
 
 def replace_string_literal(*args, replace_previous_immediate=False):
-    """Builds a function that replaces string literal values with the string 'str'
+    """Builds a function that replaces string literal values with the string norm_utils.STRING_LITERAL_STR
     
     This will return a function to be called as a part of a normalizer. This function takes no arguments and only 1 keyword 
     argument: whether to replace the previous immediate, or keep it and add in a 'str' string

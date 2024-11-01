@@ -27,12 +27,15 @@ _IMPORT_PROGRESSBAR = None
 IGNORE_OPNAMES = ['RESUME', 'NOP', 'CACHE']
 
 
-def get_smallest_np_dtype(val, signed=False):
+def get_smallest_np_dtype(val, signed=False, allow_object_dtype=False):
     """Returns the smallest numpy integer dtype needed to store the given max value.
 
     Args:
         val (int): the largest magnitude (furthest from 0) integer value that we need to be able to store
-        signed (bool, optional): if True, then use signed ints. Defaults to False.
+        signed (bool): if True, then use signed ints. Defaults to False.
+        allow_object_dtype (bool): if True, then if `val` is too large to store as C long, the 'object' numpy data type
+            will be returned instead. Otherwise if False and `val` is too large, an error will be raised. Defaults
+            to False.
 
     Raises:
         ValueError: if a bad value was passed, or if the value was too large to store in a known integer size
@@ -47,6 +50,9 @@ def get_smallest_np_dtype(val, signed=False):
     for dtype in ([np.int8, np.int16, np.int32, np.int64] if signed else [np.uint8, np.uint16, np.uint32, np.uint64]):
         if val < np.iinfo(dtype).max and (not signed or -val > np.iinfo(dtype).min):
             return dtype
+    
+    if allow_object_dtype:
+        return object
 
     raise ValueError("Could not find an appropriate size for given integer: %d" % val)
 
@@ -539,6 +545,8 @@ def timeout_wrapper(timeout=3, timeout_ret_val=None):
                     sleep_time = min(0.1, sleep_time * 1.05)
                 else:
                     return thread._return
+            
+            # NOTE: for some reason, there is no real way to kill a python thread from within python
             
             # If we make it here, there is an error, return value
             return timeout_ret_val

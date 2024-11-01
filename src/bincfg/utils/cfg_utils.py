@@ -4,8 +4,15 @@ Utilities for CFG/MemCFG objects and their datasets
 
 import numpy as np
 import bincfg
+import pickle
+import pyarrow as pa
+import pyarrow.parquet as pq
 from .type_utils import *
 from .misc_utils import get_smallest_np_dtype
+
+
+# The attributes in a CFGDataset or MemCFGDataset to save to metadata when saving as parquet file
+DATASET_SAVE_ATTRIBUTES = ['tokens', 'normalizer', 'metadata', 'allow_multiple_norms']
 
 
 def get_address(obj: 'AddressLike') -> 'int':
@@ -32,7 +39,7 @@ def get_address(obj: 'AddressLike') -> 'int':
         raise TypeError("Cannot get address value from object of type: '%s'" % type(obj).__name__)
 
     if ret < 0:
-        raise ValueError("Cannot have an address that is negative: %d" % obj)
+        raise ValueError("Cannot have an address that is negative: %s" % obj)
     return ret
 
 
@@ -114,6 +121,112 @@ def update_memcfg_tokens(cfg_data, tokens):
     for cfg in update_cfgs:
         new_asm_lines = [old_to_new[l] for l in cfg.asm_lines]
         cfg.asm_lines = np.array(new_asm_lines, dtype=get_smallest_np_dtype(max(new_asm_lines)))
+
+
+def save_dataset(dataset: 'Union[bincfg.CFGDataset, bincfg.MemCFGDataset]', path: 'str', format: 'str' = 'default', 
+                 freeze_tokens: 'bool' = True, add_parquet_metadata: 'bool' = True) -> 'None':
+    """Saves a CFGDataset or MemCFGDataset to the given path
+        
+        Args:
+            path (str): the filepath to save to
+            format (str): the file format to save to. Available formats:
+
+                - 'pickle': saves into a pickle file
+                - 'parquet': saves data as a parquet file. This uses much less space when handling a lot of memcfg's
+                  due to parquet's great compression scheme. Requires the `pyarrow` library to use
+                - 'default': uses the default file format. Defaults to 'parquet' if the `pyarrow` library is installed,
+                  otherwise will use the 'pickle' format
+            
+            freeze_tokens (bool): whether or not to 'freeze' the tokens in this MemCFGDataset. 'freezing' the tokens
+                just means that, if an AtomicTokenDict is the current token dictionary for this MemCFGDataset, then
+                its current data will be saved in the pickle file as a normal dict. This is useful for loading this
+                data later so that the loading does not depend on being able to access the files for the AtomicTokenDict.
+                Default: True. If the token dictionary is already a dict, then this has no effect
+            add_parquet_metadata (bool): if True, and you are saving with the 'parquet' file format, then this will
+                attempt to pull out any metadata columns from MemCFG's and add those columns into the output parquet file.
+                Ignored if not using the 'parquet' file format
+    """
+    format = format.lower()
+
+    # Check if we are using the default format
+    if format in ['default'] and bincfg.get_module('pyarrow', raise_err=False) is not None:
+        format = 'parquet'
+
+    if format in ['pickle', 'pkl']:
+        with open(path, 'wb') as f:
+            pickle.dump(dataset, f)
+    elif format in ['parquet', 'pq']:
+
+        # Save the old tokens in case we are using an AtomicTokenDict and freeze_tokens=True
+        old_tokens = dataset.tokens
+        dataset.tokens = dataset.tokens.data if isinstance(dataset.tokens, AtomicTokenDict) and freeze_tokens else dataset.tokens
+        
+        # Create the cfg column
+        cfg_colname = type(dataset).__name__.lower().replace('dataset', '')
+        pickled_cfgs = [pickle.dumps(m.drop_tokens()) for m in dataset]
+
+        # Add in the metadata columns, if doing that, otherwise just the cfg column
+        if add_parquet_metadata:
+            table = pa.Table.from_pylist([m.metadata for m in dataset]).append_column(cfg_colname, pickled_cfgs)
+        else:
+            table = pa.Table.from_arrays([pa.array(pickled_cfgs)], names=[cfg_colname])
+        
+        # Add in the file-level metadata
+        metadata = {bytes(k): pickle.dumps(getattr(dataset, k)) for k in DATASET_SAVE_ATTRIBUTES if hasattr(dataset, k)}
+        metadata[b'dataset_class'] = pickle.dumps(type(dataset))
+        table = table.replace_schema_metadata(metadata)
+
+        # Reset the tokens
+        dataset.tokens = old_tokens
+    else:
+        raise ValueError("Unknown file format: %s" % repr(format))
+
+
+def load_dataset(path: 'str') -> 'Union[bincfg.CFGDataset, bincfg.MemCFGDataset]':
+    """Loads a dataset from the given path
+    
+    Args:
+        path (str): the string path of the file to load
+    """
+    if path.endswith(('.pkl', '.pickle')):
+        file_type = 'pickle'
+    elif path.endswith(('.parquet', '.pq')):
+        file_type = 'parquet'
+    else:
+        try:
+            pf = pq.ParquetFile(path)
+            file_type = 'parquet'
+        except Exception:
+            file_type = 'pickle'
+    
+    if file_type == 'pickle':
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+        
+    elif file_type == 'parquet':
+
+        # Load in the table
+        table = pq.read_table(path)
+
+        # Build the dataset and set attributes
+        ret = pickle.loads(table.schema.metadata[b'dataset_class'])()
+        for k in DATASET_SAVE_ATTRIBUTES:
+            if bytes(k) in table.schema.metadata:
+                setattr(ret, k, pickle.loads(table.schema.metadata[bytes(k)]))
+        
+        # Get all the cfg's
+        cfg_colname = _get_cfg_colname(ret)
+        ret.cfgs = [pickle.loads(c) for c in table[cfg_colname]]
+
+        return ret
+
+    else:
+        raise NotImplementedError("file type: %s" % repr(file_type))
+
+
+def _get_cfg_colname(dataset: 'Union[bincfg.CFGDataset, bincfg.MemCFGDataset]') -> str:
+    """Returns the string name to use for the cfg column in a parquet file based on dataset type"""
+    return type(dataset).__name__.lower().replace('dataset', '')
 
 
 # The default global set of special function names

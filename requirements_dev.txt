@@ -9,3 +9,5 @@ networkx
 atomicwrites
 sphinx
 sphinxcontrib-confluencebuilder
+angr
+smda

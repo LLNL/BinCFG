@@ -1,45 +1,18 @@
 import pytest
 import numpy as np
-from bincfg import MemCFG, normalize_cfg_data, CFG, EdgeType, CFGEdge, get_normalizer
+from bincfg import MemCFG, normalize_cfg_data, CFG, EdgeType, CFGEdge, get_architecture
 from bincfg.normalization.norm_utils import INSTRUCTION_START_TOKEN
 from .manual_cfgs import get_all_manual_cfg_functions
 from .test_normalize_cfg import ARCH_NORMS
 
 
 @pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
-@pytest.mark.parametrize('norm_method', ['prenorm'])#['prenorm', 'pass_norm', 'call_normfunc', 'normfunc_convert'])
+@pytest.mark.parametrize('norm_method', ['prenorm', 'pass_norm', 'call_normfunc', 'normfunc_convert'])#['prenorm', 'pass_norm', 'call_normfunc', 'normfunc_convert'])
 def test_manual_memcfg(cfg_func, norm_method, print_hashes):
     """Convert CFG() to MemCFG() as expected"""
     res = cfg_func(build_level='cfg')
     orig_cfg: CFG = res['cfg'].copy()
 
-    # Perform some alterations to test with
-    if orig_cfg.num_blocks > 10:
-        orig_cfg.blocks[2].edges_out.update([
-            CFGEdge(orig_cfg.blocks[2], orig_cfg.blocks[3], 'normal'),
-            CFGEdge(orig_cfg.blocks[2], orig_cfg.blocks[3], 'function_call'),
-            CFGEdge(orig_cfg.blocks[2], orig_cfg.blocks[4], 'normal'),
-            CFGEdge(orig_cfg.blocks[2], orig_cfg.blocks[5], 'function_call'),
-            CFGEdge(orig_cfg.blocks[2], orig_cfg.blocks[2], 'function_call'),
-            CFGEdge(orig_cfg.blocks[2], orig_cfg.blocks[1], 'normal'),
-        ])
-        orig_cfg.blocks[1].metadata = {'test_val': 10}
-        orig_cfg.blocks[4].metadata = {'another': 'test', 'set': 'of dict', 'values': 10}
-        
-        orig_cfg.blocks[6].edges_out.update([
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[3], 'normal'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[3], 'function_call'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[4], 'normal'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[6], 'function_call'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[9], 'function_call'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[1], 'normal'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[2], 'normal'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[8], 'normal'),
-            CFGEdge(orig_cfg.blocks[6], orig_cfg.blocks[7], 'function_call'),
-        ])
-        orig_cfg.blocks[6].metadata = {'test_val': 10}
-        orig_cfg.blocks[9].metadata = {'another': 'test', 'set': 'of dict', 'values': 10}
-    
     memcfg_hashes = {}
 
     for norm_name, (norm_class, norm_kwargs) in ARCH_NORMS[orig_cfg.architecture].items():
@@ -69,6 +42,7 @@ def test_manual_memcfg(cfg_func, norm_method, print_hashes):
             assert memcfg.num_blocks == cfg.num_blocks
             assert memcfg.num_functions == cfg.num_functions
             assert memcfg.num_edges == cfg.num_edges
+            assert memcfg.architecture == cfg.architecture == get_architecture(res['expected']['architecture'])
 
             # Extra functions and things
             block_inds = {b.address: i for i, b in enumerate(cfg.blocks)}
@@ -79,12 +53,33 @@ def test_manual_memcfg(cfg_func, norm_method, print_hashes):
             memcfg.get_block_function_name(0)
             for i, func in enumerate(cfg.functions):
                 assert memcfg.get_function_metadata(i) == func.metadata
-                assert memcfg.function_idx_to_name[i] == func.name
-                assert memcfg.get_function_block_inds(i) == [block_inds[b.address] for b in func.blocks]
+                assert set(memcfg.get_function_block_inds(i)) == set([block_inds[b.address] for b in func.blocks])  # Function might have blocks in a different order
+            
+            # Check function names, and add '._memcfg_parent_func_name' attribute to blocks
+            for temp_cfg in [cfg, orig_cfg]:
+                name_mapping = {}
+                for i, func in enumerate(temp_cfg.functions):
+                    name_mapping.setdefault(func.name, []).append((i, func))
+                for name, func_list in name_mapping.items():
+                    if len(func_list) == 1:
+                        assert memcfg.function_idx_to_name[func_list[0][0]] == name
+                        assert memcfg.function_name_to_idx[name] == func_list[0][0]
+
+                        for block in func_list[0][1].blocks:
+                            block._memcfg_parent_func_name = func_list[0][1].name
+                    else:
+                        for v in range(len(func_list)):
+                            fn = name if v == 0 else (name + ('_%d' % (v - 1)))
+                            assert memcfg.function_idx_to_name[func_list[v][0]] == fn
+                            assert memcfg.function_name_to_idx[fn] == func_list[v][0]
+
+                            for block in func_list[v][1].blocks:
+                                block._memcfg_parent_func_name = fn
 
             # Make sure blocks match expected values
-            func_inds = {f.name: i for i, f in enumerate(cfg.functions)}
-            block_func_inds = {i: func_inds[b.parent_function.name] for i, b in enumerate(cfg.blocks)}
+            assert len(set(f.address for f in cfg.functions)) == len(cfg.functions)
+            func_inds = {f.address: i for i, f in enumerate(cfg.functions)}
+            block_func_inds = {i: func_inds[b.parent_function.address] for i, b in enumerate(cfg.blocks)}
             block_addresses = {b.address: i for i, b in enumerate(cfg.blocks)}
             assert memcfg.get_block_metadata(None) == [b.metadata for b in cfg.blocks]
             for i, block in enumerate(orig_cfg.blocks):
@@ -92,7 +87,7 @@ def test_manual_memcfg(cfg_func, norm_method, print_hashes):
                 assert memcfg.get_block_memory_address(i) == block.address
                 assert list(memcfg.get_block_asm_memory_addresses(i)) == block.asm_memory_addresses
                 assert memcfg.get_block_function_idx(i) == block_func_inds[i]
-                assert memcfg.get_block_function_name(i) == block.parent_function.name
+                assert memcfg.get_block_function_name(i) == block._memcfg_parent_func_name
 
                 norm_edges = [block_addresses[edge.to_block.address] for edge in sorted(list(block.edges_out)) if edge.edge_type == EdgeType.NORMAL]
                 func_edges = [block_addresses[edge.to_block.address] for edge in sorted(list(block.edges_out)) if edge.edge_type == EdgeType.FUNCTION_CALL]
@@ -126,11 +121,20 @@ def test_manual_memcfg(cfg_func, norm_method, print_hashes):
                     'metadata': memcfg.get_block_metadata(i),
                 }
 
-        # We can convert back to CFG and it works
+        # We can convert back to CFG and it works. Rename CFG functions
+        cfg_func_names = {}
+        for func in cfg.functions:
+            if func.name in cfg_func_names:
+                cfg_func_names[func.name] += 1
+                func.name = func.name + '_%d' % (cfg_func_names[func.name] - 1)
+            else:
+                cfg_func_names[func.name] = 0
         assert memcfg.to_cfg() == cfg
 
         # Make sure we can update metadata/tokens
-        assert memcfg.update_metadata({'test': 'value'}).metadata == {'architecture': 'x86', 'test': 'value'}
+        expected_metadata = memcfg.metadata.copy()
+        expected_metadata['TEST_EXPECTED_VALUE'] = 10
+        assert memcfg.update_metadata({'TEST_EXPECTED_VALUE': 10}).metadata == expected_metadata
         assert memcfg.set_tokens({'a': 1}).tokens == {'a': 1}
         assert memcfg.drop_tokens().tokens is None
 

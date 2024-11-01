@@ -1,0 +1,204 @@
+aaload
+aastore
+aconst_null
+aload               l
+aload_0
+aload_1
+aload_2
+aload_3
+anewarray           c
+areturn
+arraylength
+astore              l
+astore_0
+astore_1
+astore_2
+astore_3
+athrow
+baload
+bastore
+bipush              B
+breakpoint
+caload
+castore
+checkcast           c
+d2f
+d2i
+d2l
+dadd
+daload
+dastore
+dcmpg
+dcmpl
+dconst_0
+dconst_1
+ddiv
+dload               l
+dload_0
+dload_1
+dload_2
+dload_3
+dmul
+dneg
+drem
+dreturn
+dstore              l
+dstore_0
+dstore_1
+dstore_2
+dstore_3
+dsub
+dup
+dup_x1
+dup_x2
+dup2
+dup2_x1
+dup2_x2
+f2d
+f2i
+f2l
+fadd
+faload
+fastore
+fcmpg
+fcmpl
+fconst_0
+fconst_1
+fconst_2
+fdiv
+fload               l
+fload_0
+fload_1
+fload_2
+fload_3
+fmul
+fneg
+frem
+freturn
+fstore              l
+fstore_0
+fstore_1
+fstore_2
+fstore_3
+fsub
+getfield            c
+getstatic           c
+goto                b
+goto_w              bl
+i2b
+i2c
+i2d
+i2f
+i2l
+i2s
+iadd
+iaload
+iand
+iastore
+iconst_m1
+iconst_0
+iconst_1
+iconst_2
+iconst_3
+iconst_4
+iconst_5
+idiv
+if_acmpeq           b
+if_acmpne           b
+if_icmpeq           b
+if_icmpge           b
+if_icmpgt           b
+if_icmple           b
+if_icmplt           b
+if_icmpne           b
+ifeq                b
+ifge                b
+ifgt                b
+ifle                b
+iflt                b
+ifne                b
+ifnonnull           b
+ifnull              b
+iinc                l,B
+iload               l
+iload_0
+iload_1
+iload_2
+iload_3
+impdep1
+impdep2
+imul
+ineg
+instanceof          c
+invokedynamic       c,Z,Z
+invokeinterface     c,B+,Z
+invokespecial       c
+invokestatic        c
+invokevirtual       c
+ior
+irem
+ireturn
+ishl
+ishr
+istore              l
+istore_0
+istore_1
+istore_2
+istore_3
+isub
+iushr
+ixor
+jsr                 b
+jsr_w               bl
+l2d
+l2f
+l2i
+ladd
+laload
+land
+lastore
+lcmp
+lconst_0
+lconst_1
+ldc                 cb
+ldc_w               c
+ldc2_w              c
+ldiv
+lload               l
+lload_0
+lload_1
+lload_2
+lload_3
+lmul
+lneg
+lookupswitch        L,L+,P...
+lor
+lrem
+lreturn
+lshl
+lshr
+lstore              l
+lstore_0
+lstore_1
+lstore_2
+lstore_3
+lsub
+lushr
+lxor
+monitorenter
+monitorexit
+multianewarray      c,B+
+new                 c
+newarray            a
+nop
+pop
+pop2
+putfield            c
+putstatic           c
+ret                 l
+return
+saload
+sastore
+sipush              S
+swap
+tableswitch         L,L,L,J...

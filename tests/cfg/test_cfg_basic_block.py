@@ -341,6 +341,7 @@ def test_manual_cfg_blocks(cfg_func, print_hashes):
     for b in blocks.values():
         check_builtins(b)
         assert b.num_asm_lines == expected['num_asm_lines_per_block'][b.address]
+        assert b.metadata == expected['block_metadatas'][b.address]
 
         counts = dict(b.asm_counts)
         assert counts.keys() == expected['asm_counts_per_block'][b.address].keys()

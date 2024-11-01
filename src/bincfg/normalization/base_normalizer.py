@@ -435,6 +435,7 @@ class BaseNormalizer(metaclass=MetaNorm):
             Tokens.OPEN_BRACKET: self.handle_all_symbols,
             Tokens.CLOSE_BRACKET: self.handle_all_symbols,
             Tokens.PLUS_SIGN: self.handle_all_symbols,
+            Tokens.MINUS_SIGN: self.handle_all_symbols,
             Tokens.TIMES_SIGN: self.handle_all_symbols,
             Tokens.COLON: self.handle_all_symbols,
 
@@ -516,7 +517,7 @@ class BaseNormalizer(metaclass=MetaNorm):
         return state.token
     
     def handle_all_symbols(self, state):
-        """Handles symbols ('+', '[', ']', '*', ':'). Defaults to returning the original token
+        """Handles symbols ('+', '-', '[', ']', '*', ':'). Defaults to returning the original token
 
         Should return either the token to add to the current line, or None to not add any token
 

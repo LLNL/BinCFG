@@ -54,6 +54,7 @@ RE_STRING_LITERAL = r'(?:"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\')|
 
 # Various symbol characters
 RE_PLUS_SIGN = r'\+'
+RE_MINUS_SIGN = r'-'
 RE_TIMES_SIGN = r'\*'
 RE_OPEN_BRACKET = r'\['
 RE_CLOSE_BRACKET = r'\]'
@@ -355,6 +356,9 @@ def get_normalizer(normalizer):
                 raise NotImplementedError("Need to implement the java hpcdata normalizer")
             return bincfg.normalization.X86HPCDataNormalizer(tokenization_level=tl) if known_isa == 'x86' else\
                 bincfg.normalization.JavaHPCDataNormalizer(tokenization_level=tl)
+        elif norm_str in ['replaceimmediate']:
+            _check_isa('java', allow_none=False)
+            return bincfg.normalization.JavaReplaceImmediateNormalizer(tokenization_level=tl)
         else:
             raise ValueError("Unknown normalization string: '%s'" % normalizer)
     

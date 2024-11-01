@@ -1,6 +1,5 @@
 from ..base_tokenizer import Tokens, BaseTokenizer, Architectures
-from ..norm_utils import RE_SPACING, RE_NEWLINE, scan_for_token
-import re
+from ..norm_utils import RE_SPACING, RE_NEWLINE
 
 
 # The delimiter lookahead. Allows for lookahead to make sure there is some delimiter, and we don't greedily grab 

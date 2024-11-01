@@ -1,7 +1,8 @@
 from ..base_normalizer import BaseNormalizer
 from ..base_tokenizer import TokenizationLevel
 from .java_tokenizer import JAVA_DEFAULT_TOKENIZER
-from ..norm_funcs import threshold_immediate, replace_immediate
+from ..norm_funcs import threshold_immediate, replace_immediate, replace_string_literal, replace_jump_destination, \
+    replace_function_call_immediate
 from ...utils import hash_obj
 
 
@@ -86,8 +87,12 @@ class JavaBaseNormalizer(BaseNormalizer):
 
 
 class JavaReplaceImmediateNormalizer(JavaBaseNormalizer):
-    """Replaces all immediate values over some threshold with the immediate token
+    """Does some basic replacements of immediate values, strings, and function calls/jump destinations.
+
+    NOTE: for 'tableswitch' and 'lookupswitch' opcodes, only the first immediate value is replaced with 'jmpdst' to
+    designate this opcode as a jumping operand. All the rest in the instruction are left as 'immval'
     
+
     Parameters
     ----------
     imm_threshold: `Optional[int]`
@@ -118,6 +123,13 @@ class JavaReplaceImmediateNormalizer(JavaBaseNormalizer):
     anonymize_tokens: `bool`
         if True, then tokens will be annonymized by taking their 4-byte shake_128 hash. Why does this exist? Bureaucracy.
     """
+
+    DEFAULT_TOKENIZATION_LEVEL = TokenizationLevel.INSTRUCTION
+    """The default tokenization level used for this normalizer"""
+
+    renormalizable = False
+    """Whether or not this normalization method can be renormalized later by other normalization methods"""
+
     def __init__(self, imm_threshold=None, include_negative=True, tokenizer=None, token_handlers=None, token_sep=None, 
                  tokenization_level=TokenizationLevel.AUTO, anonymize_tokens=False):
         super().__init__(tokenizer=tokenizer, token_handlers=token_handlers, token_sep=token_sep, 
@@ -128,6 +140,13 @@ class JavaReplaceImmediateNormalizer(JavaBaseNormalizer):
 
         self.handle_immediate = replace_immediate(include_negative=self.include_negative) if self.imm_threshold == -1 else \
             threshold_immediate(imm_threshold, include_negative)
+    
+    handle_string_literal = replace_string_literal()
+    """"""
+    opcode_function_call = replace_function_call_immediate()
+    """"""
+    opcode_jump = replace_jump_destination
+    """"""
     
     def __eq__(self, other):
         return super().__eq__(other) and self.imm_threshold == other.imm_threshold and self.include_negative == other.include_negative

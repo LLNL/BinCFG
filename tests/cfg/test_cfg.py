@@ -13,7 +13,7 @@ def test_build_cfg(print_hashes):
     if print_hashes:
         print(__file__+'-empty', hash(cfg))
     else:
-        assert hash(cfg) == 2176661656791943841
+        assert hash(cfg) == 1995753847224319871
 
     assert cfg.normalizer is None
     assert isinstance(cfg.metadata, dict) and cfg.metadata == {}
@@ -26,8 +26,7 @@ def test_build_cfg(print_hashes):
     assert cfg.num_blocks == 0
     assert cfg.num_asm_lines == 0
     assert cfg.num_edges == 0
-    with pytest.raises(KeyError):
-        cfg.architecture
+    assert cfg.architecture is None
 
     cfg = CFG(normalizer='x86deepsemantic', metadata={'a': 10})
 
@@ -35,8 +34,7 @@ def test_build_cfg(print_hashes):
     assert isinstance(cfg.metadata, dict) and cfg.metadata == {'a': 10}
     assert isinstance(cfg.functions_dict, dict) and cfg.functions_dict == {}
     assert isinstance(cfg.blocks_dict, dict) and cfg.blocks_dict == {}
-    with pytest.raises(KeyError):
-        cfg.architecture
+    assert cfg.architecture is None
 
 
 @pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
@@ -48,7 +46,7 @@ def test_manual_cfgs_construction(cfg_func):
 
     # Check basics
     assert cfg.normalizer is None
-    assert isinstance(cfg.metadata, dict) and cfg.metadata == {}
+    assert isinstance(cfg.metadata, dict)
     assert isinstance(cfg.functions_dict, dict)
     assert isinstance(cfg.blocks_dict, dict)
 
@@ -89,6 +87,7 @@ def test_manual_cfgs_properties(cfg_func):
     assert cfg.num_edges == sum(len(blocks[addr].edges_out) for addr in expected['sorted_block_order'])
     assert cfg.asm_counts == expected['asm_counts']
     assert cfg.architecture == get_architecture(expected['architecture'])
+    assert cfg.metadata == expected['metadata']
 
 
 @pytest.mark.parametrize('cfg_func', get_all_manual_cfg_functions())
@@ -103,7 +102,7 @@ def test_manual_cfgs_set_tokens_update_metadata(cfg_func):
     assert cfg.tokens == {'a': 10}
 
     for arch in Architectures:
-        cfg.update_metadata({'architecture': arch.value[0]})
+        cfg.architecture = get_architecture(arch.value[0])
         assert cfg.architecture == arch
 
 
@@ -131,13 +130,22 @@ def test_manual_cfgs_get_funcs_and_blocks(cfg_func):
     for func in funcs.values():
         assert cfg.get_function(func, raise_err=True) == func
         assert cfg.get_function(func.address, raise_err=True) == func
-        assert cfg.get_function_by_name(func.name, raise_err=True) == func
     for block in blocks.values():
         assert cfg.get_block(block, raise_err=True) == block
         assert cfg.get_block(block.address, raise_err=True) == block
-        assert cfg.get_block_containing_address(block, raise_err=True) == block
+        assert block in cfg.get_blocks_containing_address(block, raise_err=True)
         for baddr in block.asm_memory_addresses:
-            assert cfg.get_block_containing_address(baddr, raise_err=True) == block
+            assert block in cfg.get_blocks_containing_address(baddr, raise_err=True)
+    
+    # Getting function by name
+    name_mapping = {}
+    for func in funcs.values():
+        name_mapping.setdefault(func.name, []).append(func)
+    for name, func_list in name_mapping.items():
+        if len(func_list) == 1:
+            assert cfg.get_function_by_name(name, raise_err=True, allow_multiple=False) == func_list[0]
+        else:
+            assert cfg.get_function_by_name(name, raise_err=True, allow_multiple=True) == func_list
     
     # DONT get these functions/blocks because they don't exist
     for addr in [21842781481277, 0, '0b01001010101010010101010101111011010', '0xFFFFFFFFFFFFFF']:
@@ -148,8 +156,8 @@ def test_manual_cfgs_get_funcs_and_blocks(cfg_func):
             cfg.get_block(addr, raise_err=True)
         assert cfg.get_block(addr, raise_err=False) is None
         with pytest.raises(ValueError):
-            cfg.get_block_containing_address(addr, raise_err=True)
-        assert cfg.get_block_containing_address(addr, raise_err=False) is None
+            cfg.get_blocks_containing_address(addr, raise_err=True)
+        assert cfg.get_blocks_containing_address(addr, raise_err=False) == set()
 
     for addr in ['', 'idashfiasdjijfj', 'DONTGETTHISFUNC']:
         with pytest.raises(ValueError):
@@ -188,7 +196,7 @@ def test_manual_cfgs_eq_and_hash(cfg_func, print_hashes):
     all_cfgs.append(copy.deepcopy(cfg))
     hashes.add(hash(cfg))
 
-    cfg.update_metadata({'arch': 'x86'})
+    cfg.update_metadata({'testval': 'value'})
 
     assert cfg == cfg
     assert hash(cfg) == hash(cfg)
@@ -228,6 +236,9 @@ def test_manual_cfgs_conversions(cfg_func):
     # Reading in from file
     outpath = os.path.join(os.path.dirname(__file__), '_temp_test_cfg.txt')
     for input_str in res['inputs']:
+        if not isinstance(input_str, str):
+            continue  # Don't do this if the input is not a string
+        
         with open(outpath, 'w') as f:
             f.write(input_str)
 
@@ -249,7 +260,8 @@ def test_manual_cfgs_conversions(cfg_func):
 
             check_expected(cfg2, blocks, funcs, expected)
             assert cfg == cfg2
-    os.remove(outpath)
+    if os.path.exists(outpath):
+        os.remove(outpath)
 
     # Pickling
     cfg2 = pickle.loads(pickle.dumps(cfg))
@@ -291,6 +303,7 @@ def test_manual_cfgs_conversions(cfg_func):
 
     # Copy constructor
     assert CFG(cfg) == cfg
+    assert cfg.copy() == cfg
 
 
 def check_expected(cfg: CFG, blocks, funcs, expected):
@@ -302,7 +315,7 @@ def check_expected(cfg: CFG, blocks, funcs, expected):
     assert cfg.num_blocks == sum(expected['num_blocks'].values())
     assert cfg.num_functions == expected['num_functions'] == len(expected['sorted_func_order'])
     assert cfg.asm_counts == expected['asm_counts']
-    assert cfg.metadata == {'architecture': get_architecture(expected['architecture']).value[0]} or cfg.metadata == {}
+    assert cfg.metadata == expected['metadata']
     assert cfg.architecture == get_architecture(expected['architecture'])
     assert isinstance(hash(cfg), int)
     assert isinstance(str(cfg), str)
@@ -320,9 +333,9 @@ def check_expected(cfg: CFG, blocks, funcs, expected):
 
         assert f.function_entry_block.address == expected['function_entry_block'][f.address]
         assert f.blocks == [blocks[b.address] for b in f.blocks]
-        assert f.metadata == {}
+        assert f.metadata == expected['function_metadatas'][f.address]
     
     for b in cfg.blocks:
         assert b.num_asm_lines == expected['num_asm_lines_per_block'][b.address]
         assert b.asm_counts == expected['asm_counts_per_block'][b.address]
-        assert b.metadata == {}
+        assert b.metadata == expected['block_metadatas'][b.address]

@@ -1,9 +1,11 @@
 """A bunch of fake classes mirroring CFG* classes, but without anything happening to use for testing"""
+from bincfg import EdgeType
+
 
 class FakeCFG:
     """Fake version of a CFG"""
-    def __init__(self):
-        pass
+    def __init__(self, metadata=None):
+        self.metadata = metadata if metadata is not None else {}
 
     def get_block(self, addr):
         """Needed just for __str__ call on CFGFunctions, not really used elsewhere in testing"""
@@ -55,3 +57,6 @@ class FakeEdgeType:
     """Fake version of EdgeType enum"""
     NORMAL = 'normal'
     FUNCTION_CALL = 'function_call'
+
+
+FUNC_EDGE_TYPES = [FakeEdgeType.FUNCTION_CALL, EdgeType.FUNCTION_CALL]

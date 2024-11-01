@@ -1,7 +1,7 @@
 import pytest
 from bincfg import get_normalizer, Architectures, CFG, X86BaseNormalizer, X86InnerEyeNormalizer, X86SafeNormalizer, \
     X86DeepBinDiffNormalizer, X86DeepSemanticNormalizer, X86CompressedStatsNormalizer, X86HPCDataNormalizer,\
-    JavaBaseNormalizer
+    JavaBaseNormalizer, JavaReplaceImmediateNormalizer
 from .manual_cfgs import get_all_manual_cfg_functions
 
 
@@ -18,6 +18,7 @@ ARCH_NORMS = {
     },
     Architectures.JAVA: {
         'java_base': (JavaBaseNormalizer, {}),
+        'java_repl_imm': (JavaReplaceImmediateNormalizer, {}),
     },
 }
 
@@ -69,6 +70,6 @@ def test_manual_normalized_from_inputs(cfg_func):
         for input in res['inputs']:
             for tdict in [None, {}]:
                 for make_str in [str, lambda x: x]:
-                    new_cfg = CFG(input, normalizer=make_str(normalizer), using_tokens=tdict, metadata={'architecture': res['cfg'].metadata['architecture']})
+                    new_cfg = CFG(input, normalizer=make_str(normalizer), using_tokens=tdict, metadata=res['cfg'].metadata)
                     assert res['cfg'].normalize(make_str(normalizer), inplace=False, using_tokens=tdict).update_metadata({'file_type': new_cfg.metadata['file_type']}) == new_cfg
 

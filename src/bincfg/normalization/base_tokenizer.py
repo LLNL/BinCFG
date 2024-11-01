@@ -19,6 +19,7 @@ class Tokens:
     OPEN_BRACKET = 'open_bracket'
     CLOSE_BRACKET = 'close_bracket'
     PLUS_SIGN = 'plus_sign'
+    MINUS_SIGN = 'minus_sign'
     TIMES_SIGN = 'times_sign'
     COLON = 'colon'
 
@@ -81,6 +82,7 @@ SPECIAL_TOKENS_START = [
     (Tokens.INSTRUCTION_START, INSTRUCTION_START_TOKEN),
     (Tokens.SPLIT_IMMEDIATE, SPLIT_IMMEDIATE_TOKEN),
     (Tokens.PLUS_SIGN, RE_PLUS_SIGN),
+    (Tokens.MINUS_SIGN, RE_MINUS_SIGN),
     (Tokens.TIMES_SIGN, RE_TIMES_SIGN),
     (Tokens.OPEN_BRACKET, RE_OPEN_BRACKET),
     (Tokens.CLOSE_BRACKET, RE_CLOSE_BRACKET),
@@ -358,6 +360,7 @@ class BaseTokenizer(metaclass=ParameterSaver):
             Tokens.OPEN_BRACKET: self.token_all_symbols,
             Tokens.CLOSE_BRACKET: self.token_all_symbols,
             Tokens.PLUS_SIGN: self.token_all_symbols,
+            Tokens.MINUS_SIGN: self.token_all_symbols,
             Tokens.TIMES_SIGN: self.token_all_symbols,
             Tokens.COLON: self.token_all_symbols,
 

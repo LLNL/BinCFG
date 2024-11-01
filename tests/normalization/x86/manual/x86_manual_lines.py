@@ -35,15 +35,7 @@ def _hpc_norm_nums(nums, num_digits=4):
     return ret.strip()
 
 
-# A bunch of test inputs for tokenizers and normalizers. Each input is a dictionary with an 'input' key for the raw
-#   string input, and multiple other keys, one for each class name for each tokenizer/normalizer we wish to test and
-#   values being the expected outputs. Each normalizer output should be in the 'instruction-level' tokenization, even
-#   though both instruction and op-level tokenizations will be tested. Normalizer/tokenizer outputs can optionally be 
-#   exception classes, in which case it is assumed that test should raise that type (or a subclass of that type) of error
-# Each value should also have a 'bad_assemly' key that is True if the input should be tokenized, but should fail the
-#   correct assembly checks, and False if it should pass both
-# Contant value strings can be inserted by using special keywords: {immval}, {func}, {self}, {innerfunc}, {externfunc},
-#   {jmpdst}, {memexpr}, {reg}
+# See tests/README.md for description
 X86_TEST_INPUTS = [
 
 
@@ -54,7 +46,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cc8: sub    rsp, 0x08',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cc8:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'sub'), (Tokens.SPACING, '    '), 
@@ -73,7 +64,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402ccc: mov    rax, qword ds:[rip + 0x000000000025230d<absolute=0x0000000000654fe0>]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402ccc:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '), 
@@ -94,7 +84,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00404373: mov    edi, 0x0043c066<"No %s section \'present\\n\\n">',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00404373:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '), 
@@ -113,7 +102,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00404373: mov    edi, 0x0043c066<\'re-escape with "non-json\\n\\n\'>',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00404373:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '), 
@@ -132,7 +120,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00404373: mov    edi, 0x0043c066<{"insert": "\\\"test\\n\\n\\\""}>',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00404373:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '), 
@@ -151,7 +138,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00404373: mov    edi, 0x0043c066<{"insert": "teSt\\n\\n", "insert_type": "string_literal"}>',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00404373:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '), 
@@ -170,7 +156,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004020f1: jmp    qword ds:[0x0000000000404520"\\"!@" + rax*0x08]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004020f1:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'jmp'), (Tokens.SPACING, '    '), (Tokens.MEMORY_SIZE, 'qword'),
@@ -192,7 +177,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004020f1: jmp    qword ds:[0x0000000000404520<\'\\"!@\'> + rax*0x08]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004020f1:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'jmp'), (Tokens.SPACING, '    '), (Tokens.MEMORY_SIZE, 'qword'),
@@ -214,7 +198,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004020f1: jmp    qword ds:[0x0000000000404520  \'\\"\\\' \\\'!@\' + rax*0x08]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004020f1:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'jmp'), (Tokens.SPACING, '    '), (Tokens.MEMORY_SIZE, 'qword'),
@@ -236,7 +219,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cd3: test   rax, rax',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cd3:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'test'), (Tokens.SPACING, '   '), 
@@ -254,7 +236,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cd3: nop    rax, twoRd CS:[rip+eax*0x04+0x000032]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cd3:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'nop'), (Tokens.SPACING, '    '), 
@@ -276,7 +257,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cd6: je     0x0000000000402cdd',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cd6:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'je'), (Tokens.SPACING, '     '), 
@@ -294,7 +274,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cd8: call   0x0000000000403170',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cd8:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'call'), (Tokens.SPACING, '   '), 
@@ -312,7 +291,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cdd: add    rsp, 0x08',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cdd:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'add'), (Tokens.SPACING, '    '), 
@@ -330,7 +308,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402ce1: ret',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402ce1:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'ret'),
@@ -348,7 +325,6 @@ X86_TEST_INPUTS = [
     {
         'input': """0x00402cf0: puSh   QWORD ds:,[rip + 0x0000000000252312<absolute=0x0000000000655008>]'\\\\\\"!\\'©
 \t\\t\n@' <"\\\\\\"!\'©\t\\t\n@\">""",
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cf0:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'puSh'), (Tokens.SPACING, '   '),
@@ -370,7 +346,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00402cf6: jmp    qword ds:[RIP+0x0000000000252314<absolute=0x0000000000655010>]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00402cf6:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'jmp'), (Tokens.SPACING, '    '),
@@ -390,7 +365,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x0040427f CMP    dword ds:[rip + 0x0000000000252f8a<absolute=0x0000000000657210>], 0x00',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x0040427f'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'CMP'), (Tokens.SPACING, '    '),
@@ -411,7 +385,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004042bf: mov    rsi, qword ds:[rip + 0x000000000025277a<absolute=0x0000000000656a40>]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004042bf:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '),
@@ -432,7 +405,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00404486: test   byte ds: ,[rax+rax+,, 0x00656a80<(data)_sch_istable>], 0x04',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00404486:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'test'), (Tokens.SPACING, '   '),
@@ -454,7 +426,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004042ae: mov    qword PtR dS:[rax + 0x08], r15',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004042ae:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '),
@@ -475,7 +446,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004042ab mov    rax, qword ds:[rbx]',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004042ab'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '),
@@ -495,7 +465,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x00404449: repne.scasb',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x00404449:'), (Tokens.SPACING, ' '), 
             (Tokens.INSTRUCTION_PREFIX, 'repne'), (Tokens.SPACING, '.'), (Tokens.OPCODE, 'scasb'),
@@ -512,7 +481,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x0040429e: call   0x0000000000403360<(func)bfd_demangle>',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x0040429e:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'call'), (Tokens.SPACING, '   '),
@@ -530,7 +498,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004042b7: mov    ecx, 0x00000002',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004042b7:'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, '    '),
@@ -548,7 +515,6 @@ X86_TEST_INPUTS = [
 
     {
         'input': '0x004042c6 mov,rDi,R12',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x004042c6'), (Tokens.SPACING, ' '), 
             (Tokens.OPCODE, 'mov'), (Tokens.SPACING, ','),
@@ -572,7 +538,6 @@ X86_TEST_INPUTS = [
 
     {  # Multiple prefixes in the correct order, along with a weird memory address, different immediates/registers, and COLON register address
         'input': 'lock add.repne.rep.repE.lock  v2xmmword ptr ss:[0x003 + r14*0o013 + rip*124 + mxcsr], gs:rip',
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_PREFIX, 'lock'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'add'), (Tokens.SPACING, '.'), (Tokens.INSTRUCTION_PREFIX, 'repne'), 
                 (Tokens.SPACING, '.'), (Tokens.INSTRUCTION_PREFIX, 'rep'), (Tokens.SPACING, '.'),
@@ -598,7 +563,6 @@ X86_TEST_INPUTS = [
 
     {  # A real opcode with an underscore mixed in with instruction prefixes
         'input': 'lock.repne,vcmpneq_oqsd..,.,rep,,,,pt r15',
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_PREFIX, 'lock'), (Tokens.SPACING, '.'), (Tokens.INSTRUCTION_PREFIX, 'repne'), (Tokens.SPACING, ','),
                 (Tokens.OPCODE, 'vcmpneq_oqsd'), (Tokens.SPACING, '..,.,'), (Tokens.INSTRUCTION_PREFIX, 'rep'), (Tokens.SPACING, ',,,,'),
@@ -617,7 +581,6 @@ X86_TEST_INPUTS = [
 
     {  # Immediate thresholds and positive immediates in different bases
         'input': '0x3424 add %d %d %d 0x%x 0x%x 0x%x 0o%o 0o%o 0o%o %s %s %s' % ((DEFAULT_IMMEDIATE_THRESHOLD - 1, DEFAULT_IMMEDIATE_THRESHOLD, DEFAULT_IMMEDIATE_THRESHOLD + 1) * 3 + (bin(DEFAULT_IMMEDIATE_THRESHOLD - 1), bin(DEFAULT_IMMEDIATE_THRESHOLD), bin(DEFAULT_IMMEDIATE_THRESHOLD + 1))),
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_ADDRESS, '0x3424'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'add'), (Tokens.SPACING, ' '),
             (Tokens.IMMEDIATE, '%d' % (DEFAULT_IMMEDIATE_THRESHOLD - 1)), (Tokens.SPACING, ' '), (Tokens.IMMEDIATE, '%d' % (DEFAULT_IMMEDIATE_THRESHOLD)), (Tokens.SPACING, ' '), (Tokens.IMMEDIATE, '%d' % (DEFAULT_IMMEDIATE_THRESHOLD + 1)), (Tokens.SPACING, ' '),
@@ -637,7 +600,6 @@ X86_TEST_INPUTS = [
 
     {  # Immediate thresholds and negative immediates in different bases
         'input': 'add -%d -%d -%d -0x%x -0x%x -0x%x -0o%o -0o%o -0o%o -%s -%s -%s' % ((DEFAULT_IMMEDIATE_THRESHOLD - 1, DEFAULT_IMMEDIATE_THRESHOLD, DEFAULT_IMMEDIATE_THRESHOLD + 1) * 3 + (bin(DEFAULT_IMMEDIATE_THRESHOLD - 1), bin(DEFAULT_IMMEDIATE_THRESHOLD), bin(DEFAULT_IMMEDIATE_THRESHOLD + 1))),
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.OPCODE, 'add'), (Tokens.SPACING, ' '),
             (Tokens.IMMEDIATE, '-%d' % (DEFAULT_IMMEDIATE_THRESHOLD - 1)), (Tokens.SPACING, ' '), (Tokens.IMMEDIATE, '-%d' % (DEFAULT_IMMEDIATE_THRESHOLD)), (Tokens.SPACING, ' '), (Tokens.IMMEDIATE, '-%d' % (DEFAULT_IMMEDIATE_THRESHOLD + 1)), (Tokens.SPACING, ' '),
@@ -657,7 +619,6 @@ X86_TEST_INPUTS = [
 
     {  # Rose negative immediates insert minus signs properly (different depending on normalization)
         'input': 'add 0x003<-3> [rip +0x0012<-18>]',
-        'bad_assembly': False,
         'x86_base_tokenizer': [
             (Tokens.OPCODE, 'add'), (Tokens.SPACING, ' '), 
             (Tokens.IMMEDIATE, '0x003'), (Tokens.DISASSEMBLER_INFO, '<-3>'), (Tokens.SPACING, ' '),
@@ -676,7 +637,6 @@ X86_TEST_INPUTS = [
 
     {  # Multiple rose/ghidra newlines
         'input': 'add | sub r8 | mov [RIP]\n0x1234: ret',
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.OPCODE, 'add'), (Tokens.SPACING, ' '), (Tokens.NEWLINE, '|'), (Tokens.SPACING, ' '),
             (Tokens.OPCODE, 'sub'), (Tokens.SPACING, ' '), (Tokens.REGISTER, 'r8'), (Tokens.SPACING, ' '), 
@@ -697,7 +657,6 @@ X86_TEST_INPUTS = [
 
     {  # Jump with branch prediction (not taken)
         'input': 'lock jne.repne,Pn 0x002',
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_PREFIX, 'lock'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'jne'), (Tokens.SPACING, '.'), 
                 (Tokens.INSTRUCTION_PREFIX, 'repne'), (Tokens.SPACING, ','), (Tokens.BRANCH_PREDICTION, 'Pn'), 
@@ -715,7 +674,6 @@ X86_TEST_INPUTS = [
 
     {  # Jump with branch prediction (taken)
         'input': 'lock jne.repne,PT 0x002',
-        'bad_assembly': True, 
         'x86_base_tokenizer': [
             (Tokens.INSTRUCTION_PREFIX, 'lock'), (Tokens.SPACING, ' '), (Tokens.OPCODE, 'jne'), (Tokens.SPACING, '.'), 
                 (Tokens.INSTRUCTION_PREFIX, 'repne'), (Tokens.SPACING, ','), (Tokens.BRANCH_PREDICTION, 'PT'), 
@@ -733,7 +691,6 @@ X86_TEST_INPUTS = [
 
     {  # Opcode that starts with a register substring
         'input': 'cwde',
-        'bad_assembly': False, 
         'x86_base_tokenizer': [
             (Tokens.OPCODE, 'cwde'), (Tokens.NEWLINE, '\n'),
         ],
@@ -754,7 +711,6 @@ X86_TEST_INPUTS = [
 
     {  # Token mismatch (unknown character)
         'input': 'add ###',
-        'bad_assembly': True, 
         'x86_base_tokenizer': TokenMismatchError,
         'x86_base': TokenMismatchError,
         'x86_innereye': TokenMismatchError,
@@ -767,7 +723,6 @@ X86_TEST_INPUTS = [
 
     {  # Token mismatch (bad character in opcode)
         'input': 'op&code',
-        'bad_assembly': True, 
         'x86_base_tokenizer': TokenMismatchError,
         'x86_base': TokenMismatchError,
         'x86_innereye': TokenMismatchError,
@@ -780,12 +735,3 @@ X86_TEST_INPUTS = [
 
 ]
 
-def _format_repl(string):
-    _repls = [('{immval}', IMMEDIATE_VALUE_STR), ('{str}', STRING_LITERAL_STR), ('{func}', FUNCTION_CALL_STR), 
-              ('{memexpr}', MEMORY_EXPRESSION_STR), ('{dispimm}', DISPLACEMENT_IMMEDIATE_STR), ('{reg}', GENERAL_REGISTER_STR), 
-              ('{split_imm}', SPLIT_IMMEDIATE_TOKEN), ('{jmpdst}', JUMP_DESTINATION_STR), ('{dispmem}', IMMEDIATE_VALUE_STR),
-              ('{memptr}', MEM_SIZE_TOKEN_STR)]
-    for k, v in _repls:
-        string = string.replace(k, v)
-    return string
-X86_TEST_INPUTS = [{k: _format_repl(v) if isinstance(v, str) else [_format_repl(o) for o in v] if isinstance(v, (list, tuple)) and isinstance(v[0], str) else v for k, v in d.items()} for d in X86_TEST_INPUTS]

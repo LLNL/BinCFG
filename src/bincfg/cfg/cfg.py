@@ -4,7 +4,7 @@ import bincfg
 import pickle
 import re
 from collections import Counter, namedtuple
-from .cfg_parsers import parse_cfg_data
+from .parsing import parse_cfg_data
 from .cfg_function import CFGFunction
 from .cfg_edge import CFGEdge, EdgeType
 from .cfg_basic_block import CFGBasicBlock
@@ -34,6 +34,8 @@ class CFG:
 
     normalizer: `Optional[Union[str, NormalizerType]]`
         the normalizer to use to force-renormalize the incoming CFG, or None to not normalize
+    architecture: `Optional[Union[str, Architectures]]`
+        the architecture being used. Will be automatically detected if not passed
     metadata: `Optional[dict]`
         a dictionary of metadata to add to this CFG
 
@@ -45,6 +47,9 @@ class CFG:
     normalizer: 'Union[NormalizerType, None]'
     """The normalizer used to normalize assembly lines in this ``CFG``, or None if they have not been normalized"""
 
+    architecture: 'Union[Architectures, None]' = None
+    """The architecture of this ``CFG``"""
+
     metadata: 'dict'
     """Dictionary of metadata associated with this ``CFG``"""
 
@@ -54,18 +59,22 @@ class CFG:
     blocks_dict: 'dict[int, CFGBasicBlock]'
     """Dictionary mapping integer basic block addresses to their ``CFGBasicBlock`` objects"""
 
-    def __init__(self, data: 'CFGInputDataType' = None, normalizer: 'Optional[Union[str, NormalizerType]]' = None, 
-                 metadata: 'Optional[dict]' = None, using_tokens: 'Optional[TokenDictType]' = None):
+    def __init__(self, data: 'CFGInputDataType' = None, normalizer: 'Optional[Union[str, NormalizerType]]' = None,
+                 architecture: 'Optional[Union[str, Architectures]]' = None, metadata: 'Optional[dict]' = None, 
+                 using_tokens: 'Optional[TokenDictType]' = None):
         # These store functions/blocks while allowing for O(1) lookup by address
         self.functions_dict: 'dict[int, CFGFunction]' = {}
         self.blocks_dict: 'dict[int, CFGBasicBlock]' = {}
 
         self.normalizer: 'Union[NormalizerType, None]' = None
         self.metadata: 'dict' = {} if metadata is None else metadata.copy()
-
+        
         # If data is not None, parse it
         if data is not None:
             parse_cfg_data(self, data)
+        
+        # Check the architecture
+        self.architecture = get_architecture(architecture) if architecture is not None else auto_detect_assembly_language(self)
 
         # Finally, normalize if needed
         if normalizer is not None:
@@ -90,7 +99,8 @@ class CFG:
             raise ValueError("Could not find function with address: (decimal) %d, (hex) 0x%x" % (address, address))
         return self.functions_dict.get(address, None)
     
-    def get_function_by_name(self, name: 'str', raise_err: 'bool' = True) -> 'Union[CFGFunction, None]':
+    def get_function_by_name(self, name: 'str', raise_err: 'bool' = True, allow_multiple: 'bool' = True) \
+            -> 'Union[CFGFunction, list[CFGFunction], None]':
         """Returns the function in this ``CFG`` with the given name
 
         NOTE: if the name of the function is None, then the expected string name to this method would be:
@@ -100,6 +110,8 @@ class CFG:
             name (str): the name of the function to get
             raise_err (bool): if True, will raise an error if the function with the given memory address was 
                 not found, otherwise will return None
+            allow_multiple (bool): if True, and there are multiple functions with the same name, then all those functions
+                will be returned in a list instead of raising an error
 
         Raises:
             ValueError: if the function with the given address could not be found
@@ -107,9 +119,18 @@ class CFG:
         Returns:
             Union[CFGFunction, None]: the function with the given address, or None if that function does not exist
         """
+        funcs = []
         for func in self.functions_dict.values():
             if func.name == name:
-                return func
+                funcs.append(func)
+
+        if len(funcs) > 1:
+            if allow_multiple:
+                return funcs
+            raise ValueError("Found multiple functions with the same name: %s" % repr(name))
+        elif len(funcs) == 1:
+            return funcs[0]
+        
         if raise_err:
             raise ValueError("Could not find function with name: %s" % repr(name))
         return None
@@ -133,10 +154,10 @@ class CFG:
             raise ValueError("Could not find basic block with address: (decimal) %d, (hex) %x" % (address, address))
         return self.blocks_dict.get(address, None)
     
-    def get_block_containing_address(self, address: 'AddressLike', raise_err: 'bool' = True) -> 'Union[CFGBasicBlock, None]':
-        """Returns the basic block in this CFG that contains the given address at the start of one of its instructions
+    def get_blocks_containing_address(self, address: 'AddressLike', raise_err: 'bool' = True) -> 'set[CFGBasicBlock]':
+        """Returns a list of basic blocks in this CFG that contains the given address at the start of one of its instructions
 
-        This will lazily compute an instruction lookup dictionary mapping addresses to the blocks that contain them
+        This will lazily compute an instruction lookup dictionary mapping addresses to the block(s) that contain them
 
         NOTE: this will only return a block if the address is either equal to the block's address, or if it is exactly
         equal to one of the addresses for an assembly instruction in a block's `.asm_memory_addresses` list
@@ -150,7 +171,7 @@ class CFG:
             ValueError: if the basic block containing the given address could not be found
 
         Returns:
-            Union[CFGBasicBlock, None]: the basic block that contains the given address
+            set[CFGBasicBlock]: set of all basic blocks that contains the given address
         """
         address = get_address(address)
 
@@ -160,7 +181,7 @@ class CFG:
         elif raise_err:
             raise ValueError("Could not find basic block containing the address: (decimal) %d, (hex) %x" % (address, address))
         else:
-            return None
+            return set()
     
     @property
     def _inst_lookup(self) -> 'dict[int, CFGBasicBlock]':
@@ -171,7 +192,7 @@ class CFG:
 
             for block in self.blocks:
                 for block_addr in (block.asm_memory_addresses + [block.address]):
-                    self._inst_lookup_dict[block_addr] = block
+                    self._inst_lookup_dict.setdefault(get_address(block_addr), set()).add(block)
         
         return self._inst_lookup_dict
     
@@ -213,9 +234,9 @@ class CFG:
                 # Check for bad basic blocks
                 if block.address is None:
                     raise ValueError("Block cannot have a None address when adding to CFG: %s" % block)
-                if block.address in self._inst_lookup:
+                if block.address in self.blocks_dict:
                     if not override:
-                        raise ValueError("Basic block has address 0x%x which already exists in this CFG!" % block.address)
+                        raise ValueError("Basic block has address 0x%x which is the same as another block that already exists in this CFG!" % block.address)
                 
                 block.parent_function = func
                 self.blocks_dict[block.address] = block
@@ -224,7 +245,7 @@ class CFG:
             if hasattr(self, '_inst_lookup_dict'):
                 for block in func.blocks:
                     for block_addr in (block.asm_memory_addresses + [block.address]):
-                        self._inst_lookup[block_addr] = block
+                        self._inst_lookup_dict.setdefault(get_address(block_addr), set()).add(block)
                 
         # Check the edges out
         for block in self.blocks:
@@ -239,6 +260,9 @@ class CFG:
                                   if isinstance(e, tuple) else e) for e in block.edges_in)
             for edge in block.edges_in:
                 edge.from_block.edges_out.add(edge)
+        
+        # Attempt to redo the architecture in case this was created empty and new ones were added
+        self.architecture = auto_detect_assembly_language(self)
 
     def insert_library(self, cfg: 'CFG', function_mapping: 'dict[str, int]', offset: 'Optional[int]' = None):
         """WIP. Inserts the cfg of a shared library into this cfg
@@ -385,24 +409,9 @@ class CFG:
         return [e for b in self.blocks for e in b.edges_out]
     
     @property
-    def architecture(self) -> 'Architectures':
-        """Returns the architecture being used. Currently a WIP
-        
-        Checks for an 'arch' or 'architecture' key in the metadata and returns it if it is known. Can currently return:
-        'java', 'x86'
-        """
-        for k in ['arch', 'architecture']:
-            if k in self.metadata:
-                arch = self.metadata[k]
-                break
-        else:
-            auto_detect_assembly_language(self)
-            if 'architecture' in self.metadata:
-                arch = self.metadata['architecture']
-            else:
-                raise KeyError("Could not find 'arch' or 'architecture' key in metadata, and failed to autodetect")
-        
-        return get_architecture(arch)
+    def _arch_str(self) -> 'str':
+        """A string designating the architecture of this CFG, used for reproducible hashing"""
+        return self.architecture.value[0] if self.architecture is not None else 'None'
     
     def update_metadata(self, other: 'dict') -> 'CFG':
         """Updates this CFG's metadata dictionary with the given dictionary, and returns self"""
@@ -514,7 +523,8 @@ class CFG:
         functions = {func.address: _NetXTuple(func.name, func._is_extern_function, tuple(b.address for b in func.blocks), func.metadata.copy())
                      for func in self.functions_dict.values()}
 
-        ret = networkx.MultiDiGraph(normalizer=copy.deepcopy(self.normalizer), functions=functions, metadata=self.metadata.copy())
+        ret = networkx.MultiDiGraph(normalizer=copy.deepcopy(self.normalizer), functions=functions, 
+                                    metadata=self.metadata.copy(), architecture=self.architecture)
         
         # Add all of the blocks to the graph
         for block in self.blocks_dict.values():
@@ -538,7 +548,7 @@ class CFG:
             cfg (Optional[CFG]): can be None to create/return a new CFG object, or an already
                 created and empty CFG() object to put data into that one
         """
-        ret = CFG() if cfg is None else cfg
+        ret = CFG(architecture=graph.graph['architecture']) if cfg is None else cfg
         ret.normalizer = graph.graph['normalizer']
         ret.metadata = {} if graph.graph['metadata'] is None else graph.graph['metadata']
 
@@ -592,26 +602,30 @@ class CFG:
                 del block._temp_edges_out
     
     def __eq__(self, other: 'Any') -> 'bool':
-        return isinstance(other, CFG) and all(eq_obj(self, other, selector=s) for s in ['normalizer', 'functions_dict', 'metadata'])
+        return isinstance(other, CFG) and all(eq_obj(self, other, selector=s) for s in ['normalizer', 'functions_dict', 'metadata', 'architecture'])
     
     def __hash__(self) -> 'int':
-        return hash_obj([self.functions_dict, self.metadata, self.normalizer], return_int=True)
+        return hash_obj([self.functions_dict, self.metadata, self.normalizer, self._arch_str], return_int=True)
 
     def __str__(self) -> 'str':
         norm_str = 'no normalizer' if self.normalizer is None else ('normalizer: ' + repr(str(self.normalizer)))
-        return "CFG with %s and %d functions, %d basic blocks, %d edges, and %d lines of assembly\nMetadata: %s" \
-            % (norm_str, len(self.functions_dict), self.num_blocks, self.num_edges, self.num_asm_lines, self.metadata)
+        return "CFG (arch: %s) with %s and %d functions, %d basic blocks, %d edges, and %d lines of assembly\nMetadata: %s" \
+            % (self._arch_str, norm_str, len(self.functions_dict), self.num_blocks, self.num_edges, self.num_asm_lines, self.metadata)
 
     def __repr__(self) -> 'str':
         return str(self)
     
-    def get_cfg_build_code(self) -> 'str':
+    def get_cfg_build_code(self, insert_autogen_str=True, addfuncs_str=None, cfg_str=None) -> 'str':
         """Returns python code that will build the given cfg. Used for testing.
 
         This will return the plain code itself to build, with no initial tabs.
 
         Args:
             cfg (CFG): the cfg
+            insert_autogen_str (bool): whether or not to insert an autogen string
+            addfuncs_str (Optional[str]): string to use to add functions to CFG. Here for testing purposes
+            cfg_str (Optional[str]): string to use to build the initial CFG. Should take in a single parameter for
+                `.format()` which will be the metadata dictionary
         
         Returns:
             str: string of python code to build the cfg
@@ -631,8 +645,12 @@ class CFG:
             "\n    ".join([("__auto_blocks[%d]," % b.address) for b in f.blocks])
         )) for f in self.functions])
 
-        return _CFG_BUILD_CODE_STR % (self.num_functions, self.num_blocks, self.num_edges, self.num_asm_lines, all_functions,
-            all_blocks, all_edges, add_blocks)
+        autogen_start = _AUTOGEN_STR_START if insert_autogen_str else ''
+        autogen_end = _AUTOGEN_STR_END if insert_autogen_str else ''
+        addfuncs_str = '__auto_cfg.add_function(*__auto_functions.values())' if addfuncs_str is None else addfuncs_str
+        cfg_str = '__auto_cfg = CFG(metadata={0})' if cfg_str is None else cfg_str
+        return _CFG_BUILD_CODE_STR % (autogen_start, self.num_functions, self.num_blocks, self.num_edges, self.num_asm_lines, 
+                                      cfg_str.format(self.metadata), all_functions, all_blocks, all_edges, add_blocks, addfuncs_str, autogen_end)
     
 
 # Dictionary mapping architectures to known matches that uniquely determine architecture (at least, for known supported architectures)
@@ -652,21 +670,26 @@ DETECT_ARCHITECTURE_RES = {
 DETECT_ARCHITECTURE_RES = {k: [re.compile(x) for x in v] for k, v in DETECT_ARCHITECTURE_RES.items()}
 
 
-def auto_detect_assembly_language(cfg: 'CFG') -> 'None':
-    """Attempts to detect the assembly language used in the given CFG, settings its 'architecture' key in the metadata if successful
+def auto_detect_assembly_language(cfg: 'CFG') -> 'Union[Architectures, None]':
+    """Attempts to detect the assembly language used in the given CFG, returning the ``Architectures`` enum value if found, otherwise None.
     
     Will attempt to find known substrings in any block that indicate a specific language. Assumes the full CFG is all the
     same language
 
     Args:
         cfg (CFG): the cfg to detect language on
+    
+    Returns:
+        Union[Architectures, None]: The ``Architectures`` enum value if the architecture could be determined, otherwise None
     """
+    if cfg.architecture is not None:
+        return cfg.architecture
+    
     for block in cfg.blocks:
         for arch, matches in DETECT_ARCHITECTURE_RES.items():
             for match in matches:
                 if any(match.fullmatch(l.lower()) for l in block.asm_lines):
-                    cfg.metadata['architecture'] = arch.value[0]
-                    return
+                    return arch
 
 
 class InvalidInsertionMemoryAddressError(Exception):
@@ -677,13 +700,8 @@ class InvalidInsertionMemoryAddressError(Exception):
 _NetXTuple = namedtuple('CFGFunctionDataTuple', 'name is_extern_function blocks metadata')
 
         
-_CFG_BUILD_CODE_STR: 'str' = """
-##################
-# AUTO-GENERATED #
-##################
-
-# Create the cfg object. This cfg has %d functions, %d basic blocks, %d edges, and %d lines of assembly.
-__auto_cfg = CFG()
+_CFG_BUILD_CODE_STR: 'str' = """%s# Create the cfg object. This cfg has %d functions, %d basic blocks, %d edges, and %d lines of assembly.
+%s
 
 # Building all functions. Dictionary maps integer address to CFGFunction() object
 __auto_functions = {
@@ -698,13 +716,27 @@ __auto_blocks = {
 # Building all edges
 %s
 
+
+# Set the edges_in on the blocks
+for b in __auto_blocks.values():
+    for e in b.edges_out:
+        e.to_block.edges_in.add(CFGEdge(b, e.to_block, e.edge_type))
+
 # Adding basic blocks to their associated functions
 %s
 
 # Adding functions to the cfg
-__auto_cfg.add_function(*__auto_functions.values())
+%s%s
+"""
+
+_AUTOGEN_STR_START = """##################
+# AUTO-GENERATED #
+##################
+
+"""
+
+_AUTOGEN_STR_END = """
 
 ######################
 # END AUTO-GENERATED #
-######################
-"""
+######################"""

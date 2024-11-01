@@ -1,9 +1,8 @@
-import os
 import pickle
 from collections import Counter
 from .cfg import CFG
 from ..normalization import normalize_cfg_data, get_normalizer
-from ..utils import progressbar, isinstance_with_iterables, hash_obj, eq_obj
+from ..utils import isinstance_with_iterables, hash_obj, eq_obj, save_dataset, load_dataset
 
 
 class CFGDataset:
@@ -23,10 +22,6 @@ class CFGDataset:
         no files. Will ignore any files that end with '.txt' or '.dot', but cannot be parsed.
     max_files: `Optional[int]`
         stops after loading this many files. If None, then there is no max
-    allow_multiple_norms: `bool`
-        by default, ``CFGDataset`` will only allow unnormalized cfg's when `normalizer=None` (if `normalizer` is not None, 
-        then any normalized cfg added will be renormalized). Setting `allow_multiple_norms` to True will allow this 
-        ``CFGDataset`` to store cfg data with any normalization method (assuming `normalizer=None`)
     progress: `bool`
         if True, will show a progressbar when loading cfg's from load_path
     metadata: `Optional[Dict]`
@@ -47,34 +42,13 @@ class CFGDataset:
     metadata = None
     """A dictionary of metadata associated with this ``CFGDataset``"""
 
-    def __init__(self, cfg_data=None, normalizer=None, load_path=None, max_files=None, allow_multiple_norms=False, 
-        progress=False, metadata=None, num_workers=1, **add_data_kwargs):
-
-        self.allow_multiple_norms = allow_multiple_norms
+    def __init__(self, cfg_data=None, normalizer=None, metadata=None, **add_data_kwargs):
         self.normalizer = get_normalizer(normalizer) if normalizer is not None else None
         self.metadata = {} if metadata is None else metadata.copy()
         self.cfgs = []
 
         if cfg_data is not None:
-            self.add_data(*cfg_data, progress=progress, **add_data_kwargs)
-
-        # Load in files if needed
-        if load_path is not None:
-            files = list(sorted([f for f in os.listdir(load_path) if f.endswith('.txt') or f.endswith('.dot')]))
-            if len(files) == 0:
-                raise ValueError("No files found ending in '.txt' or '.dot'")
-            if max_files is not None:
-                files = files[:max_files]
-            
-            if num_workers <= 1:
-                for file in progressbar(files, progress=progress):
-                    metadata = {'uid': file}
-                    self.add_data(CFG(os.path.join(load_path, file), metadata=metadata), progress=False, **add_data_kwargs)
-            else:
-                if progress: print("MP loading cfgs...")
-                res = get_thread_pool(num_workers=num_workers).map(_mp_load_cfg, [os.path.join(load_path, file) for file in files])
-                if progress: print("Loading complete! Adding loaded cfgs...")
-                self.add_data(*res, progress=progress, **add_data_kwargs)
+            self.add_data(*cfg_data, **add_data_kwargs)
     
     def add_data(self, *cfg_data, inplace=True, force_renormalize=False, progress=False):
         """Adds data to this dataset
@@ -166,6 +140,33 @@ class CFGDataset:
         """A collections.Counter() of all unique assembly lines and their counts accross all cfg's in this dataset"""
         return sum((cfg.asm_counts for cfg in self.cfgs), Counter())
 
+    def save(self, path, format='default', add_parquet_metadata=True):
+        """Saves this CFGDataset to the given path
+        
+        Args:
+            path (str): the filepath to save to
+            format (str): the file format to save to. Available formats:
+
+                - 'pickle': saves into a pickle file
+                - 'parquet': saves data as a parquet file. This uses much less space when handling a lot of memcfg's
+                  due to parquet's great compression scheme. Requires the `pyarrow` library to use
+                - 'default': uses the default file format. Defaults to 'parquet' if the `pyarrow` library is installed,
+                  otherwise will use the 'pickle' format
+            
+            add_parquet_metadata (bool): if True, and you are saving with the 'parquet' file format, then this will
+                attempt to pull out any metadata columns from MemCFG's and add those columns into the output parquet file.
+                Ignored if not using the 'parquet' file format
+        """
+        save_dataset(self, path=path, format=format, add_parquet_metadata=add_parquet_metadata)
+    
+    @classmethod
+    def load(cls, path):
+        """Loads a CFGDataset from the given path"""
+        ret = load_dataset(path=path)
+
+        if not isinstance(ret, cls):
+            raise TypeError("Loaded dataset was not of type %s, type: %s" % (repr(type(cls).__name__), repr(type(ret).__name__)))
+
     def __str__(self):
         stat_names = ["CFG's", 'Functions', 'Edges', 'Basic Blocks', 'Assembly Lines']
         c = [self.num_cfgs, self.num_functions, self.num_edges, self.num_blocks, self.num_asm_lines]
@@ -185,10 +186,24 @@ class CFGDataset:
     def __iter__(self):
         return iter(self.cfgs)
     
-    def save(self, path):
-        """Saves this CFGDataset to path"""
-        with open(path, 'wb') as f:
-            pickle.dump(self, f)
+    def save(self, path, format='default', add_parquet_metadata=True):
+        """Saves this CFGDataset to the given path
+        
+        Args:
+            path (str): the filepath to save to
+            format (str): the file format to save to. Available formats:
+
+                - 'pickle': saves into a pickle file
+                - 'parquet': saves data as a parquet file. This uses much less space when handling a lot of memcfg's
+                  due to parquet's great compression scheme. Requires the `pyarrow` library to use
+                - 'default': uses the default file format. Defaults to 'parquet' if the `pyarrow` library is installed,
+                  otherwise will use the 'pickle' format
+            
+            add_parquet_metadata (bool): if True, and you are saving with the 'parquet' file format, then this will
+                attempt to pull out any metadata columns from MemCFG's and add those columns into the output parquet file.
+                Ignored if not using the 'parquet' file format
+        """
+        save_dataset(self, path=path, format=format, freeze_tokens=True, add_parquet_metadata=add_parquet_metadata)
     
     def dumps(self):
         """Returns this object pickled with pickle.dumps()"""
@@ -204,8 +219,7 @@ class CFGDataset:
         return sum(hash(c) for c in self.cfgs) * 17 + hash_obj(self.metadata, return_int=True) * 31
     
     def __eq__(self, other):
-        return isinstance(other, CFGDataset) and all(eq_obj(self, other, selector=s) for s in ['normalizer', 'metadata']) \
-            and eq_obj(self, other, selector='cfgs')
+        return isinstance(other, CFGDataset) and all(eq_obj(self, other, selector=s) for s in ['normalizer', 'metadata', 'cfgs'])
 
 
 def _get_stats(stat_names, counts):

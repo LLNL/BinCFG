@@ -46,6 +46,9 @@ class MemCFG:
     Can be shared with a ``MemCFGDataset`` object if this ``MemCFG`` is a part of one
     """
 
+    architecture: 'Union[Architectures, None]'
+    """The architecture of this ``MemCFG``, or None if it is unknown"""
+
     tokens: 'dict[str, int]'
     """Dictionary mapping token strings to integer values used in this ``MemCFG``
     
@@ -233,8 +236,9 @@ class MemCFG:
                 raise ValueError("Must pass a normalizer if `cfg` is unnormalized!")
             cfg = normalize_cfg_data(cfg, normalizer=normalizer, inplace=inplace, force_renormalize=force_renormalize)
         
-        # Keep cfg's normalization if possible
+        # Keep cfg's normalization/architecture
         self.normalizer = cfg.normalizer
+        self.architecture = cfg.architecture
 
         # Figure out what the tokens should be, updating the token dict if we find new ones
         self.tokens = {} if using_tokens is None else using_tokens
@@ -283,8 +287,8 @@ class MemCFG:
         self.block_asm_idx[-1] = len(self.asm_lines)
 
         if keep_memory_addresses:
-            self.block_memory_addresses = np.empty([cfg.num_blocks], dtype=get_smallest_np_dtype(max_block_addr, signed=True))
-            self.asm_memory_addresses = np.empty(sum(len(b.asm_memory_addresses) for b in cfg.blocks), dtype=get_smallest_np_dtype(max_asm_addr, signed=True))
+            self.block_memory_addresses = np.empty([cfg.num_blocks], dtype=get_smallest_np_dtype(max_block_addr, signed=True, allow_object_dtype=True))
+            self.asm_memory_addresses = np.empty(sum(len(b.asm_memory_addresses) for b in cfg.blocks), dtype=get_smallest_np_dtype(max_asm_addr, signed=True, allow_object_dtype=True))
             self.block_asm_mem_addr_idx = np.empty([cfg.num_blocks + 1], dtype=get_smallest_np_dtype(cfg.num_asm_lines))
             self.block_asm_mem_addr_idx[-1] = len(self.asm_memory_addresses)
         else:
@@ -627,6 +631,11 @@ class MemCFG:
         """Returns the inverse of `self.tokens`: dictionary mapping token integers to their original strings"""
         return {v:k for k, v in self.tokens.items()}
     
+    @property
+    def _arch_str(self) -> 'str':
+        """A string designating the architecture of this CFG, used for reproducible hashing"""
+        return self.architecture.value[0] if self.architecture is not None else 'None'
+    
     def update_metadata(self, other: 'dict') -> 'Self':
         """Updates this MemCFG's metadata dictionary with the given dictionary, and returns self"""
         self.metadata.update(other)
@@ -655,27 +664,6 @@ class MemCFG:
         """
         return normalize_cfg_data(self, normalizer=normalizer, using_tokens=using_tokens, inplace=inplace, 
                                   force_renormalize=force_renormalize)
-    
-    @property
-    def architecture(self) -> 'Architectures':
-        """Returns the architecture being used. Currently a WIP
-        
-        Checks for an 'arch' or 'architecture' key in the metadata and returns it if it is known. Can currently return:
-        'java', 'x86'
-        """
-        for k in ['arch', 'architecture']:
-            if k in self.metadata:
-                arch = self.metadata[k]
-                break
-        else:
-            raise ValueError("Could not find 'arch' or 'architecture' key in metadata")
-        
-        if arch in ['x86']:
-            return Architectures.X86
-        elif arch in ['java', 'java-bytecode']:
-            return Architectures.JAVA
-        else:
-            raise ValueError("Unknown architecture value: %s" % repr(arch))
     
     def get_edge_values(self) -> 'np.ndarray':
         """Returns the edge type values
@@ -863,14 +851,14 @@ class MemCFG:
     def __eq__(self, other) -> 'bool':
         return isinstance(other, MemCFG) and all(eq_obj(self, other, selector=s) for s in [
             'normalizer', 'tokens', 'function_name_to_idx', 'asm_lines', 'asm_memory_addresses', 'block_asm_idx', 'block_func_idx', 
-            'block_flags',  'metadata', 'function_metadata', 'block_metadata', 'graph_c', 'graph_r', 'block_labels'
+            'block_flags', 'metadata', 'function_metadata', 'block_metadata', 'graph_c', 'graph_r', 'block_labels', 'architecture',
         ])
     
-    def __hash__(self) -> 'hash':
+    def __hash__(self) -> 'int':
         return hash_obj([
             self.normalizer, self.tokens, self.function_name_to_idx, self.asm_lines, self.asm_memory_addresses, 
             self.block_asm_idx, self.block_func_idx, self.block_flags, self.metadata, self.function_metadata, 
-            self.block_metadata, self.graph_c, self.graph_r, self.block_labels,
+            self.block_metadata, self.graph_c, self.graph_r, self.block_labels, self._arch_str
         ], return_int=True)
     
 

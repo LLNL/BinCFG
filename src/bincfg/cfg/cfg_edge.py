@@ -4,7 +4,6 @@ Classes/Methods involving edges in a ``CFG`` object
 
 import re
 import bincfg
-from ..utils import eq_obj
 from enum import Enum
 from ..utils.type_utils import *
 
